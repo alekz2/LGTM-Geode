@@ -16,6 +16,10 @@ SERVER_NAME="${SERVER_NAME:-server1}"
 SERVER_DIR="${SERVER_DIR:-$CLUSTER_DIR/server1}"
 SERVER_PORT="${SERVER_PORT:-40404}"
 SERVER_HTTP_PORT="${SERVER_HTTP_PORT:-7071}"
+LOCATOR_CONNECTION="${LOCATOR_CONNECTION:-$LOCATOR_HOST[$LOCATOR_PORT]}"
+START_GATEWAY_SENDER="${START_GATEWAY_SENDER:-true}"
+GATEWAY_SENDER_ID="${GATEWAY_SENDER_ID:-senderA}"
+GATEWAY_SENDER_MEMBERS="${GATEWAY_SENDER_MEMBERS:-$SERVER_NAME}"
 
 JMX_EXPORTER_PORT=9404
 
@@ -46,7 +50,7 @@ gfsh -e "start locator \
 sleep 5
 
 echo "=== Starting WAN server on Antman ==="
-gfsh -e "connect --locator=$LOCATOR_HOST[$LOCATOR_PORT]" \
+gfsh -e "connect --locator=$LOCATOR_CONNECTION" \
      -e "start server \
          --name=$SERVER_NAME \
          --dir=$SERVER_DIR \
@@ -55,5 +59,15 @@ gfsh -e "connect --locator=$LOCATOR_HOST[$LOCATOR_PORT]" \
          --http-service-port=$SERVER_HTTP_PORT \
          --J=-Dgemfire.start-dev-rest-api=true \
 	 --J=-javaagent:/opt/jmx-exporter/jmx_prometheus_javaagent.jar=${JMX_EXPORTER_PORT}:/opt/jmx-exporter/geode-jmx.yml"
+
+if [[ "$START_GATEWAY_SENDER" == "true" ]]; then
+  echo "=== Starting GatewaySender on Antman ==="
+  if gfsh -e "connect --locator=$LOCATOR_CONNECTION" \
+      -e "start gateway-sender --id=$GATEWAY_SENDER_ID --members=$GATEWAY_SENDER_MEMBERS"; then
+    :
+  else
+    echo "GatewaySender $GATEWAY_SENDER_ID is not configured yet. Run scripts/Antman/create_gateway_sender.sh first." >&2
+  fi
+fi
 
 echo "=== Antman WAN startup complete ==="
