@@ -22,6 +22,9 @@ SERVER_BIND_ADDRESS="${SERVER_BIND_ADDRESS:-172.22.79.100}"
 SERVER_HOSTNAME_FOR_CLIENTS="${SERVER_HOSTNAME_FOR_CLIENTS:-192.168.0.14}"
 LOCATORS="${LOCATORS:-172.22.79.100[20334]}"
 
+START_GATEWAY_RECEIVER="${START_GATEWAY_RECEIVER:-true}"
+GATEWAY_RECEIVER_MEMBER="${GATEWAY_RECEIVER_MEMBER:-$SERVER_NAME}"
+
 if [[ ! -x "$GFSH_BIN" ]]; then
   echo "gfsh not found or not executable: $GFSH_BIN" >&2
   exit 1
@@ -53,5 +56,15 @@ echo "=== Starting Cluster B server on Vision ==="
     --server-port=$SERVER_PORT \
     --bind-address=$SERVER_BIND_ADDRESS \
     --hostname-for-clients=$SERVER_HOSTNAME_FOR_CLIENTS"
+
+if [[ "$START_GATEWAY_RECEIVER" == "true" ]]; then
+  echo "=== Starting GatewayReceiver on Vision ==="
+  if "$GFSH_BIN" -e "connect --locator=$LOCATORS" \
+      -e "start gateway-receiver --members=$GATEWAY_RECEIVER_MEMBER"; then
+    :
+  else
+    echo "GatewayReceiver is not configured yet. Run scripts/Vision/create_gateway_receiver.sh first." >&2
+  fi
+fi
 
 echo "=== Vision Cluster B startup complete ==="
