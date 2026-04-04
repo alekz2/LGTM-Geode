@@ -7,10 +7,10 @@ PATH="$JAVA_HOME/bin:$PATH"
 GEODE_HOME="${GEODE_HOME:-/home/alex/geode}"
 GFSH_BIN="${GFSH_BIN:-$GEODE_HOME/bin/gfsh}"
 LOCATORS="${LOCATORS:-172.22.79.100[20334]}"
-SERVER_NAME="${SERVER_NAME:-serverB1}"
+SERVER_GROUPS="${SERVER_GROUPS:-wan-receiver}"
 
 GATEWAY_RECEIVER_START_PORT="${GATEWAY_RECEIVER_START_PORT:-5000}"
-GATEWAY_RECEIVER_END_PORT="${GATEWAY_RECEIVER_END_PORT:-5000}"
+GATEWAY_RECEIVER_END_PORT="${GATEWAY_RECEIVER_END_PORT:-5500}"
 GATEWAY_RECEIVER_BIND_ADDRESS="${GATEWAY_RECEIVER_BIND_ADDRESS:-172.22.79.100}"
 GATEWAY_RECEIVER_HOSTNAME_FOR_SENDERS="${GATEWAY_RECEIVER_HOSTNAME_FOR_SENDERS:-192.168.0.14}"
 
@@ -22,13 +22,14 @@ fi
 echo "=== Creating GatewayReceiver on Vision ==="
 "$GFSH_BIN" -e "connect --locator=$LOCATORS" \
   -e "create gateway-receiver \
-    --members=$SERVER_NAME \
+    --groups=$SERVER_GROUPS \
     --start-port=$GATEWAY_RECEIVER_START_PORT \
     --end-port=$GATEWAY_RECEIVER_END_PORT \
     --bind-address=$GATEWAY_RECEIVER_BIND_ADDRESS \
     --hostname-for-senders=$GATEWAY_RECEIVER_HOSTNAME_FOR_SENDERS \
     --manual-start=false \
     --if-not-exists=true" \
+  -e "describe config --group=$SERVER_GROUPS" \
   -e "list gateways"
 
 echo "=== GatewayReceiver create complete ==="

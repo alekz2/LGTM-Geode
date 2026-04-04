@@ -1,7 +1,8 @@
 # Apache Geode WAN Replication Lab Plan and Execution Runbook
-**Environment:** Antman / Hulk / Vision / WarMachine  
-**Purpose:** Build Apache Geode WAN replication using GatewaySender and GatewayReceiver  
-**Current status:** Cluster B receiver side is up and validated; Cluster A sender side is in progress
+
+**Environment:** Antman / Hulk / Vision / WarMachine
+**Purpose:** Run Apache Geode WAN replication from Cluster A on Antman to Cluster B on Vision
+**Current status:** WAN sender and receiver are persisted through Geode cluster configuration groups, the `Activity` regions are configured correctly, and end-to-end replication is validated
 
 ---
 
@@ -9,688 +10,274 @@
 
 ### 1.1 Physical layout
 
-#### Cluster A - Source side - Ironman Windows 11 PC - VMware Workstation 17 Pro
+#### Cluster A - Source side
 - **Antman** - Rocky Linux 8 - `192.168.0.150`
 - **Hulk** - RHEL 8 - `192.168.0.151`
 
-#### Cluster B - Target side - Thor Windows 11 PC - WSL2
-- **Vision** - Ubuntu 24.04 - internal WSL2 IP `172.22.79.100`
-- **WarMachine** - RHEL 8 WSL2 - same WSL2 NAT domain, external access will be through Thor
+#### Cluster B - Target side
+- **Vision** - Ubuntu 24.04 on WSL2 - internal IP `172.22.79.100`
+- **WarMachine** - RHEL 8 in the same WSL2/NAT domain for future expansion
 
-#### Thor Windows host
-- **Thor** - Windows 11 host IP `192.168.0.14`
-- **Role** - external entry point for WSL2 workloads using Windows port forwarding
+#### External forwarding host
+- **Thor** - Windows 11 host - `192.168.0.14`
+- **Role** - Windows `portproxy` entry point into the Vision WSL2 guest
 
----
-
-## 2. Target WAN design
-
-### 2.1 Distributed system IDs
+### 1.2 Distributed system IDs
 - **Cluster A** = `1`
 - **Cluster B** = `2`
 
-### 2.2 Planned Geode roles
+### 1.3 Active roles
 - **Cluster A**
-  - Antman: locator + server
-  - Hulk: server
-  - GatewaySender lives here
+  - `locator1` on Antman
+  - `server1` on Antman
+  - `GatewaySender senderA` on Antman
 - **Cluster B**
-  - Vision: locator + server
-  - WarMachine: optional second server later
-  - GatewayReceiver lives here
+  - `locatorB` on Vision
+  - `serverB1` on Vision
+  - `GatewayReceiver` on Vision
 
-### 2.3 Ports in use or planned
+### 1.4 Active ports
 
 | Component | Host | Port | Purpose |
-|---|---|---:|---|
-| Locator A | Antman | 10334 | Cluster A locator |
-| Locator B | Vision | 20334 | Cluster B locator |
-| Server port B1 | Vision | 40405 | Server member port |
-| GatewayReceiver | Vision via Thor | 5000 | WAN receiver entry point |
-| HTTP service existing old locator | Antman | 7070 | Existing locator1 service |
-| JMX existing old locator | Antman | 1099 | Existing locator1 manager |
+| --- | --- | ---: | --- |
+| Cluster A locator | Antman | 10334 | Cluster A locator |
+| Cluster A JMX manager | Antman | 1099 | Locator manager |
+| Cluster A HTTP service | Antman | 7070 | Locator HTTP service |
+| Cluster A server1 | Antman | 40404 | Cache server |
+| Cluster A server1 HTTP | Antman | 7071 | REST/HTTP service |
+| Cluster B locator internal | Vision | 20334 | Cluster B locator |
+| Cluster B server1 | Vision | 40405 | Cache server |
+| Cluster B receiver internal | Vision | 5000 | GatewayReceiver listen port |
+| Cluster B receiver external | Thor | 5000 | Forwarded WAN receiver endpoint |
 
-### 2.4 WAN traffic path
+### 1.5 WAN traffic path
 
 ```text
-Antman/Hulk -> GatewaySender -> Thor 192.168.0.14:5000 -> Vision 172.22.79.100:5000 -> GatewayReceiver
+Antman -> senderA -> Thor 192.168.0.14:5000 -> Vision 172.22.79.100:5000 -> GatewayReceiver
 ```
 
 ---
 
-## 3. Mermaid architecture diagram
+## 2. Current validated Geode state
 
-```mermaid
-flowchart LR
-    subgraph Ironman["Ironman - Windows 11 - VMware"]
-        A["Antman\nRocky Linux\n192.168.0.150"]
-        H["Hulk\nRHEL 8\n192.168.0.151"]
-        GS["GatewaySender\nPlanned"]
-        A --> GS
-        H --> GS
-    end
+### 2.1 Vision - Cluster B
+- `locatorB` runs on `172.22.79.100:20334`
+- `serverB1` runs on `172.22.79.100:40405`
+- `GatewayReceiver` listens on `172.22.79.100:5000`
+- `hostname-for-senders` advertises `192.168.0.14`
 
-    subgraph ThorHost["Thor - Windows 11 host"]
-        T["Thor LAN IP\n192.168.0.14\nWindows portproxy"]
-    end
+### 2.2 Antman - Cluster A
+- `locator1` runs on `192.168.0.150:10334`
+- `server1` runs on `192.168.0.150:40404`
+- `senderA` targets remote distributed system `2`
+- `senderA` is connected to receiver location `192.168.0.14:5000`
 
-    subgraph WSL2["Thor - WSL2 Cluster B"]
-        V["Vision\nUbuntu 24.04\n172.22.79.100"]
-        W["WarMachine\nRHEL 8\nTBD"]
-        LB["locatorB\n20334"]
-        SB1["serverB1\n40405"]
-        GR["GatewayReceiver\n5000"]
-        V --> LB
-        V --> SB1
-        SB1 --> GR
-        W -. future .- SB1
-    end
-
-    GS --> T --> GR
-```
+### 2.3 Region wiring
+- **Cluster A** region `Activity`
+  - `data-policy = REPLICATE`
+  - `gateway-sender-id = senderA`
+- **Cluster B** region `Activity`
+  - `data-policy = PERSISTENT_REPLICATE`
+  - no sender attached
 
 ---
 
-## 4. Completed setup with every executed command and validation
+## 3. Scripted workflow in repo
 
-## Step 1 - Validate Cluster A can reach Thor
+### 3.1 Vision scripts
+- `scripts/Vision/start_geode.sh`
+  - starts `locatorB`
+  - starts `serverB1` with group `wan-receiver`
+- `scripts/Vision/stop_geode.sh`
+  - stops `serverB1`
+  - stops `locatorB`
+- `scripts/Vision/create_gateway_receiver.sh`
+  - writes a persistent receiver config to Geode cluster configuration
+  - targets group `wan-receiver`
+  - uses port `5000`
+  - binds to `172.22.79.100`
+  - advertises `192.168.0.14` to senders
 
-### Executed on Antman
+### 3.2 Antman scripts
+- `scripts/Antman/start_geode.sh`
+  - starts `locator1`
+  - starts `server1` with group `wan-sender`
+- `scripts/Antman/stop_geode.sh`
+  - stops `server1`
+  - stops `locator1`
+- `scripts/Antman/create_gateway_sender.sh`
+  - writes a persistent sender config to Geode cluster configuration
+  - targets group `wan-sender`
+  - targets remote distributed system `2`
+
+### 3.3 Recommended execution order
+
+#### Vision
 ```bash
-ping -c2 192.168.0.14
+./scripts/Vision/start_geode.sh
+./scripts/Vision/create_gateway_receiver.sh
 ```
 
-### Result
-```text
-2 packets transmitted, 2 received, 0% packet loss
-rtt min/avg/max/mdev = 2.615/3.182/3.750/0.570 ms
+#### Antman
+```bash
+./scripts/Antman/start_geode.sh
+./scripts/Antman/create_gateway_sender.sh
 ```
 
-### Validation
-- **PASS** - Antman can reach Thor over LAN
+Notes:
+- Run the create scripts once to persist the gateway configs in the locators.
+- After that, rebooting and rerunning only the start scripts should bring the gateways back automatically because the servers rejoin with the same groups.
 
-### Executed on Antman
+---
+
+## 4. Commands executed in the validated lab state
+
+### 4.1 Start Cluster B on Vision
+
+```bash
+./scripts/Vision/create_gateway_receiver.sh
+./scripts/Vision/start_geode.sh
+```
+
+Validation:
+
+```bash
+gfsh -e "connect --locator=172.22.79.100[20334]" -e "list gateways"
+ss -ltnp | grep 5000
+```
+
+Validated result:
+- `describe config --group=wan-receiver` shows the receiver config in cluster configuration
+- `GatewayReceiver` present on `serverB1`
+- receiver listening on port `5000`
+
+### 4.2 Start Cluster A on Antman
+
+```bash
+./scripts/Antman/create_gateway_sender.sh
+./scripts/Antman/start_geode.sh
+```
+
+Validation:
+
+```bash
+gfsh -e "connect --locator=192.168.0.150[10334]" -e "list gateways"
+```
+
+Validated result:
+- `describe config --group=wan-sender` shows sender `senderA` in cluster configuration
+- `senderA` present on `server1`
+- sender status `Running and Connected`
+- receiver location `192.168.0.14:5000`
+
+### 4.3 Validate external receiver path from Antman
+
 ```bash
 nc -zv 192.168.0.14 5000
 ```
 
-### Result
-```text
-Ncat: Connection refused.
-```
+Validated result:
 
-### Validation
-- **EXPECTED at this stage** - port forwarding/listener not ready yet
-
-### Executed on Hulk
-```bash
-ping -c2 192.168.0.14
-```
-
-### Result
-```text
-2 packets transmitted, 2 received, 0% packet loss
-rtt min/avg/max/mdev = 4.780/5.946/7.112/1.166 ms
-```
-
-### Validation
-- **PASS** - Hulk can reach Thor over LAN
-
-### Executed on Hulk
-```bash
-nc -zv 192.168.0.14 5000
-```
-
-### Result
-```text
-Ncat: Connection refused.
-```
-
-### Validation
-- **EXPECTED at this stage** - receiver path not active yet
-
----
-
-## Step 2 - Confirm Vision WSL2 IP
-
-### Executed on Vision
-```bash
-hostname -I
-```
-
-### Result
-```text
-172.22.79.100
-```
-
-### Validation
-- **PASS** - Vision internal WSL2 IP identified for port forwarding and bind-address use
-
----
-
-## Step 3 - Fix Vision hostname resolution before package operations
-
-### Problem observed on Vision
-```bash
-sudo apt update
-```
-
-### Result
-```text
-sudo: unable to resolve host Vision: Temporary failure in name resolution
-```
-
-### Resolution performed
-- `/etc/hosts` was corrected so the hostname `Vision` resolves locally
-
-### Validation command executed on Vision
-```bash
-sudo apt update
-```
-
-### Validation result
-- No hostname resolution error after the fix
-
-### Validation
-- **PASS** - hostname issue resolved
-
----
-
-## Step 4 - Verify Java availability on Vision
-
-### Executed on Vision
-```bash
-java --version
-```
-
-### Result
-```text
-openjdk 11.0.30 2026-01-20
-OpenJDK Runtime Environment (build 11.0.30+7-post-Ubuntu-1ubuntu124.04)
-```
-
-### Validation
-- **PASS** - Java 11 available for Geode
-
----
-
-## Step 5 - Verify Apache Geode on Vision
-
-### Executed on Vision
-```bash
-gfsh version
-```
-
-### Result
-```text
-1.15.2
-```
-
-### Validation
-- **PASS** - Apache Geode 1.15.2 installed and `gfsh` works
-
----
-
-## Step 6 - Validate Thor port-forwarded receiver path
-
-### Executed on Antman
-```bash
-nc -zv 192.168.0.14 5000
-```
-
-### Result
 ```text
 Ncat: Connected to 192.168.0.14:5000.
-Ncat: 0 bytes sent, 0 bytes received in 0.01 seconds.
 ```
 
-### Validation
-- **PASS** - Thor port forwarding path to Vision is working
+### 4.4 Validate and correct region wiring
+
+Cluster A validation:
+
+```bash
+gfsh -e "connect --locator=192.168.0.150[10334]" -e "describe region --name=Activity"
+```
+
+Current validated state on Cluster A:
+
+```text
+gateway-sender-id | senderA
+```
+
+Cluster B validation:
+
+```bash
+gfsh -e "connect --locator=172.22.79.100[20334]" -e "describe region --name=Activity"
+```
+
+Current validated state on Cluster B:
+
+```text
+data-policy | PERSISTENT_REPLICATE
+```
+
+### 4.5 End-to-end WAN replication test
+
+Executed on Antman:
+
+```bash
+gfsh -e "connect --locator=192.168.0.150[10334]" -e "put --region=Activity --key=E2E001 --value=wan_test_20260330"
+```
+
+Executed on Vision:
+
+```bash
+gfsh -e "connect --locator=172.22.79.100[20334]" -e "get --region=Activity --key=E2E001"
+```
+
+Validated result:
+- Cluster B returned the value written on Cluster A
+- `list gateways` on Antman still showed `senderA` as `Running and Connected`
 
 ---
 
-## Step 7 - Start Cluster B locator on Vision
+## 5. Validation summary
 
-### First attempt that failed
-```bash
-gfsh
-start locator   --name=locatorB   --dir=/home/alex/geode_cluster_b/locatorB   --port=20334   --bind-address=0.0.0.0   --hostname-for-clients=192.168.0.14   --J=-Dgemfire.distributed-system-id=2
-```
-
-### Result
-```text
-The Locator process terminated unexpectedly with exit status 1.
-```
-
-### Corrected command executed on Vision
-```bash
-start locator   --name=locatorB   --dir=/home/alex/geode_cluster_b/locatorB   --port=20334   --bind-address=172.22.79.100   --hostname-for-clients=192.168.0.14   --J=-Dgemfire.distributed-system-id=2
-```
-
-### Validation command executed on Vision
-```bash
-list members
-```
-
-### Validation result
-```text
-Member Count : 1
-
-locatorB | 172.22.79.100(locatorB:2549:locator)<ec><v0>:41000 [Coordinator]
-```
-
-### Validation
-- **PASS** - Cluster B locator is running with distributed-system-id 2
+| Check | Command | Expected / Observed Result | Status |
+| --- | --- | --- | --- |
+| Thor receiver path reachable | `nc -zv 192.168.0.14 5000` from Antman | connected | PASS |
+| Cluster B locator up | `list members` on Vision | `locatorB` present | PASS |
+| Cluster B server up | `list members` on Vision | `serverB1` present | PASS |
+| Receiver active | `list gateways` on Vision | receiver on `5000` | PASS |
+| Receiver persisted | `describe config --group=wan-receiver` on Vision | receiver config present | PASS |
+| Receiver listening | `ss -ltnp | grep 5000` on Vision | listener on `172.22.79.100:5000` | PASS |
+| Cluster A locator up | `list members` on Antman | `locator1` present | PASS |
+| Cluster A server up | `list members` on Antman | `server1` present | PASS |
+| Sender active | `list gateways` on Antman | `senderA Running and Connected` | PASS |
+| Sender persisted | `describe config --group=wan-sender` on Antman | senderA config present | PASS |
+| Sender receiver target | `list gateways` on Antman | receiver location `192.168.0.14:5000` | PASS |
+| Cluster A region wiring | `describe region --name=Activity` on Antman | `gateway-sender-id = senderA` | PASS |
+| Cluster B region data policy | `describe region --name=Activity` on Vision | `PERSISTENT_REPLICATE` | PASS |
+| End-to-end replication | `put` on Antman + `get` on Vision | replicated value returned | PASS |
 
 ---
 
-## Step 8 - Start Cluster B server on Vision
+## 6. Important notes and caveats
 
-### Executed on Vision
-```bash
-start server   --name=serverB1   --dir=/home/alex/geode_cluster_b/serverB1   --server-port=40405   --bind-address=172.22.79.100   --hostname-for-clients=192.168.0.14   --locators=172.22.79.100[20334]
-```
+### 6.1 Vision is behind WSL2 NAT
+- `Vision` is not directly reachable from Antman on the LAN
+- WAN traffic must enter through `Thor` at `192.168.0.14`
+- the receiver advertises `192.168.0.14` to senders via `hostname-for-senders`
 
-### Validation command executed on Vision
-```bash
-list members
-```
+### 6.2 Gateway persistence model
+- gateway configs are now written through Geode cluster configuration using groups
+- `wan-receiver` is the Vision server group
+- `wan-sender` is the Antman server group
+- the create scripts should only be needed when bootstrapping or intentionally changing the gateway configuration
+- after a normal reboot, rerunning the host start scripts should be sufficient
 
-### Validation result
-```text
-Member Count : 2
+### 6.3 Region direction matters
+- For this lab, Cluster A is the source and Cluster B is the target
+- `Activity` on Cluster A must point to `senderA`
+- `Activity` on Cluster B must not point to a sender
 
-locatorB | 172.22.79.100(locatorB:2549:locator)<ec><v0>:41000 [Coordinator]
-serverB1 | 172.22.79.100(serverB1:2731)<v1>:41001
-```
-
-### Validation
-- **PASS** - `serverB1` joined Cluster B
-
----
-
-## Step 9 - Create GatewayReceiver on Cluster B
-
-### Executed on Vision
-```bash
-create gateway-receiver   --member=serverB1   --start-port=5000   --end-port=5000   --bind-address=172.22.79.100   --hostname-for-senders=192.168.0.14   --manual-start=false
-```
-
-### Command result
-```text
-Member  | Status | Message
-serverB1 | OK     | GatewayReceiver created on member "serverB1" and will listen on the port "5000"
-
-Configuration change is not persisted because the command is executed on specific member.
-```
-
-### Validation command executed on Vision
-```bash
-list gateways
-```
-
-### Validation result
-```text
-GatewayReceiver Section
-
-Member                                   | Port | Sender Count | Senders Connected
-172.22.79.100(serverB1:2731)<v1>:41001   | 5000 | 0            |
-```
-
-### Additional validation executed on Antman
-```bash
-nc -zv 192.168.0.14 5000
-```
-
-### Additional validation result
-```text
-Ncat: Connected to 192.168.0.14:5000.
-Ncat: 0 bytes sent, 0 bytes received in 0.01 seconds.
-```
-
-### Validation
-- **PASS** - GatewayReceiver is active and reachable from Cluster A through Thor
-
-### Important note
-- The persistence warning is informational, not an error.
-- It means the receiver is live on `serverB1`, but the config was not saved into shared cluster configuration.
+### 6.4 Hulk and WarMachine
+- `Hulk` and `WarMachine` are not part of the currently validated end-to-end path
+- they remain future scale-out members rather than part of the validated minimum WAN topology
 
 ---
 
-## Step 10 - Investigate existing locator conflict on Antman
+## 7. Current one-line status
 
-### Initial attempt executed on Antman
-```bash
-gfsh
-start locator   --name=locatorA   --dir=/home/alex/geode_cluster_a/locatorA   --port=10334   --bind-address=192.168.0.150   --hostname-for-clients=192.168.0.150   --J=-Dgemfire.distributed-system-id=1
-```
+**Cluster A senderA and Cluster B GatewayReceiver are persisted via group-based cluster configuration, and end-to-end replication for region `Activity` is validated from Antman to Vision.**
 
-### Result
-```text
-The Locator process terminated unexpectedly with exit status 1.
-Exception in thread "main" java.lang.RuntimeException:
-An IO error occurred while starting a Locator in /home/alex/geode_cluster_a/locatorA on 192.168.0.150[10334]:
-Network is unreachable; port (10334) is not available on Antman.
-```
 
-### Diagnostic commands executed on Antman
-```bash
-ip addr
-hostname
-hostname -I
-getent hosts Antman
-cat /etc/hosts
-ls -lah /home/alex/geode_cluster_a/locatorA
-find /home/alex/geode_cluster_a/locatorA -maxdepth 1 -type f | sort
-ss -ltnp | egrep '10334|1099|7070' || true
-ps -fp 2469
-readlink -f /proc/2469/cwd
-jcmd 2469 VM.command_line
-```
 
-### Key diagnostic results
-```text
-ens160 has 192.168.0.150/24
-getent hosts Antman -> fe80::45ab:a5f3:6c2a:da93 Antman
-/home/alex/geode_cluster_a/locatorA was empty
 
-LISTEN *:7070 users:(("java",pid=2469,...))
-LISTEN *:10334 users:(("java",pid=2469,...))
-LISTEN *:1099 users:(("java",pid=2469,...))
-
-working directory -> /home/alex/geode_cluster/locator1
-java_command -> org.apache.geode.distributed.LocatorLauncher start locator1 --port=10334
-```
-
-### Root cause confirmed
-- An older Geode locator was already running on Antman and holding `10334`, `7070`, and `1099`
-
-### Validation
-- **PASS** - old locator conflict identified
-- **Current blocker** - old `locator1` must be stopped before the new WAN-correct `locatorA` can be started
-
----
-
-## 5. Consolidated validation summary
-
-| Validation item | Command | Result | Status |
-|---|---|---|---|
-| Antman reachability to Thor | `ping -c2 192.168.0.14` | 0% loss | PASS |
-| Hulk reachability to Thor | `ping -c2 192.168.0.14` | 0% loss | PASS |
-| Vision WSL IP discovery | `hostname -I` | `172.22.79.100` | PASS |
-| Vision Java validation | `java --version` | OpenJDK 11.0.30 | PASS |
-| Geode validation on Vision | `gfsh version` | `1.15.2` | PASS |
-| Cluster B locator validation | `list members` | `locatorB` visible | PASS |
-| Cluster B server validation | `list members` | `locatorB`, `serverB1` visible | PASS |
-| GatewayReceiver validation | `list gateways` | receiver on 5000 | PASS |
-| End-to-end receiver path | `nc -zv 192.168.0.14 5000` | connected | PASS |
-| Antman locatorA failure analysis | `ss`, `ps`, `jcmd` | old locator found | PASS |
-
----
-
-## 6. Issues encountered and resolutions
-
-### Issue A - Vision hostname resolution failed during sudo
-**Symptom**
-```text
-sudo: unable to resolve host Vision: Temporary failure in name resolution
-```
-
-**Resolution**
-- Corrected `/etc/hosts` on Vision
-
-**Outcome**
-- `sudo apt update` no longer showed hostname error
-
-### Issue B - Cluster B locator failed with generic bind choice
-**Symptom**
-- `locatorB` failed when started with `--bind-address=0.0.0.0`
-
-**Resolution**
-- Restarted with:
-  ```bash
-  --bind-address=172.22.79.100
-  --hostname-for-clients=192.168.0.14
-  ```
-
-**Outcome**
-- `locatorB` started successfully
-
-### Issue C - GatewayReceiver persistence warning
-**Symptom**
-```text
-Configuration change is not persisted because the command is executed on specific member.
-```
-
-**Resolution**
-- No fix needed for current lab phase
-
-**Outcome**
-- Receiver is live, but future restart automation should recreate or persist config
-
-### Issue D - Cluster A locator startup failure
-**Symptom**
-```text
-Network is unreachable; port (10334) is not available on Antman.
-```
-
-**Resolution**
-- Investigated NICs, hostname resolution, open ports, and running Java processes
-- Confirmed an older locator was already bound to `10334`, `7070`, and `1099`
-
-**Outcome**
-- Must shut down old `locator1` before starting the new WAN-correct `locatorA`
-
----
-
-## 7. Step-by-step execution runbook
-
-## Phase A - Completed runbook steps
-
-### A1. Verify network path from Cluster A to Thor
-Run on Antman:
-```bash
-ping -c2 192.168.0.14
-nc -zv 192.168.0.14 5000
-```
-
-Run on Hulk:
-```bash
-ping -c2 192.168.0.14
-nc -zv 192.168.0.14 5000
-```
-
-### A2. Identify the Vision WSL2 IP
-Run on Vision:
-```bash
-hostname -I
-```
-
-### A3. Fix local hostname resolution on Vision if needed
-Run on Vision:
-```bash
-sudo apt update
-```
-
-If hostname resolution fails:
-- correct `/etc/hosts`
-- retry `sudo apt update`
-
-### A4. Verify Java and Geode on Vision
-Run on Vision:
-```bash
-java --version
-gfsh version
-```
-
-### A5. Start Cluster B locator
-Run in `gfsh` on Vision:
-```bash
-start locator   --name=locatorB   --dir=/home/alex/geode_cluster_b/locatorB   --port=20334   --bind-address=172.22.79.100   --hostname-for-clients=192.168.0.14   --J=-Dgemfire.distributed-system-id=2
-```
-
-Validate:
-```bash
-list members
-```
-
-### A6. Start Cluster B server
-Run in `gfsh` on Vision:
-```bash
-start server   --name=serverB1   --dir=/home/alex/geode_cluster_b/serverB1   --server-port=40405   --bind-address=172.22.79.100   --hostname-for-clients=192.168.0.14   --locators=172.22.79.100[20334]
-```
-
-Validate:
-```bash
-list members
-```
-
-### A7. Create GatewayReceiver
-Run in `gfsh` on Vision:
-```bash
-create gateway-receiver   --member=serverB1   --start-port=5000   --end-port=5000   --bind-address=172.22.79.100   --hostname-for-senders=192.168.0.14   --manual-start=false
-```
-
-Validate:
-```bash
-list gateways
-```
-
-Also validate from Antman:
-```bash
-nc -zv 192.168.0.14 5000
-```
-
----
-
-## Phase B - Next runbook steps to continue
-
-### B1. Stop the old Antman locator that blocks port 10334
-Run on Antman:
-```bash
-gfsh
-connect --locator=192.168.0.150[10334]
-shutdown --include-locators=true
-```
-
-Validate in Linux shell:
-```bash
-ss -ltnp | egrep '10334|1099|7070' || true
-```
-
-### B2. Start the correct Cluster A locator
-Run in `gfsh` on Antman:
-```bash
-start locator   --name=locatorA   --dir=/home/alex/geode_cluster_a/locatorA   --port=10334   --bind-address=192.168.0.150   --hostname-for-clients=192.168.0.150   --J=-Dgemfire.distributed-system-id=1
-```
-
-Validate:
-```bash
-list members
-```
-
-### B3. Start Cluster A server on Antman
-Planned command:
-```bash
-start server   --name=serverA1   --dir=/home/alex/geode_cluster_a/serverA1   --server-port=40404   --bind-address=192.168.0.150   --hostname-for-clients=192.168.0.150   --locators=192.168.0.150[10334]
-```
-
-Validate:
-```bash
-list members
-```
-
-### B4. Start Cluster A server on Hulk
-Planned command:
-```bash
-start server   --name=serverA2   --dir=/home/alex/geode_cluster_a/serverA2   --server-port=40404   --bind-address=192.168.0.151   --hostname-for-clients=192.168.0.151   --locators=192.168.0.150[10334]
-```
-
-Validate:
-```bash
-list members
-```
-
-### B5. Create Cluster A GatewaySender
-Planned command:
-```bash
-create gateway-sender   --id=senderA   --remote-distributed-system-id=2   --parallel=false   --manual-start=false
-```
-
-Validate:
-```bash
-list gateways
-```
-
-### B6. Create region on Cluster B
-Planned command:
-```bash
-create region --name=Activity --type=REPLICATE
-```
-
-Validate:
-```bash
-list regions
-```
-
-### B7. Create matching region on Cluster A and attach sender
-Planned command:
-```bash
-create region   --name=Activity   --type=REPLICATE   --gateway-sender-id=senderA
-```
-
-Validate:
-```bash
-list regions
-describe region --name=Activity
-```
-
-### B8. Test WAN replication
-Example validation sequence on Cluster A:
-```bash
-put --region=Activity --key=REF100 --value=Value100
-get --region=Activity --key=REF100
-```
-
-Validation on Cluster B:
-```bash
-get --region=Activity --key=REF100
-```
-
----
-
-## 8. Current state snapshot
-
-### Ready
-- Vision reachable through Thor on port `5000`
-- Cluster B locator and server are up
-- Cluster B GatewayReceiver is active
-- Receiver path from Antman to Vision is validated
-
-### In progress
-- Cluster A rebuild for WAN-correct locator and sender
-
-### Blocker
-- Existing Antman `locator1` still owns port `10334`
-
----
-
-## 9. LLM revisit notes
-
-When another LLM or future session resumes from this document, it should assume:
-1. Do not recreate Cluster B receiver side unless it has been shut down.
-2. First action should be stopping old `locator1` on Antman.
-3. After the old locator is stopped, continue with:
-   - `locatorA`
-   - `serverA1`
-   - `serverA2`
-   - `GatewaySender`
-   - region creation
-   - replication validation
-4. GatewayReceiver currently exists only on `serverB1` member scope and is not yet persisted in shared cluster configuration.
-
----
-
-## 10. One-line status
-
-**Cluster B receiver side is fully up and validated; Cluster A sender side is blocked only by an older locator already occupying Antman port 10334.**
