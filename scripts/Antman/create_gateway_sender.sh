@@ -19,17 +19,12 @@ if [[ ! -x "$GFSH_BIN" ]]; then
 fi
 
 echo "=== Checking existing GatewaySender on Antman ==="
-if "$GFSH_BIN" -e "connect --locator=$LOCATOR_CONNECTION" -e "describe config --group=$SERVER_GROUPS" | grep -q "$GATEWAY_SENDER_ID"; then
-  echo "GatewaySender $GATEWAY_SENDER_ID already exists. Skipping create."
+if "$GFSH_BIN" -e "connect --locator=$LOCATOR_CONNECTION" -e "list gateways" | grep -q "$GATEWAY_SENDER_ID"; then
+  echo "GatewaySender $GATEWAY_SENDER_ID already exists in live cache. Skipping create."
 else
   echo "=== Creating GatewaySender on Antman ==="
   "$GFSH_BIN" -e "connect --locator=$LOCATOR_CONNECTION" \
-    -e "create gateway-sender \
-      --id=$GATEWAY_SENDER_ID \
-      --remote-distributed-system-id=$REMOTE_DISTRIBUTED_SYSTEM_ID \
-      --groups=$SERVER_GROUPS \
-      --parallel=$GATEWAY_SENDER_PARALLEL \
-      --manual-start=$GATEWAY_SENDER_MANUAL_START"
+    -e "create gateway-sender --id=$GATEWAY_SENDER_ID --remote-distributed-system-id=$REMOTE_DISTRIBUTED_SYSTEM_ID --groups=$SERVER_GROUPS --parallel=$GATEWAY_SENDER_PARALLEL --manual-start=$GATEWAY_SENDER_MANUAL_START"
 fi
 
 echo "=== GatewaySender status on Antman ==="
@@ -38,3 +33,4 @@ echo "=== GatewaySender status on Antman ==="
   -e "list gateways"
 
 echo "=== GatewaySender create complete ==="
+
