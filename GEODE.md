@@ -394,6 +394,25 @@ Notes:
 - Always run the create scripts after clearing the cluster configuration disk store — gateway and region configs are not automatically restored on restart.
 - On normal restarts where the disk store is intact, start scripts alone are sufficient.
 
+### Shutdown order
+
+Stop Cluster A before Cluster B so the sender drains and disconnects cleanly before the receiver goes away.
+
+1. Stop Cluster A on Antman.
+2. Stop Cluster B on Vision.
+
+Antman:
+
+```bash
+./scripts/Antman/stop_geode.sh
+```
+
+Vision:
+
+```bash
+./scripts/Vision/stop_geode.sh
+```
+
 ## Validation Commands
 
 ### Cluster A
