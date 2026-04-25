@@ -19,7 +19,10 @@ SERVER_HTTP_PORT="${SERVER_HTTP_PORT:-7071}"
 LOCATOR_CONNECTION="${LOCATOR_CONNECTION:-$LOCATOR_HOST[$LOCATOR_PORT]}"
 SERVER_GROUPS="${SERVER_GROUPS:-wan-sender}"
 
-JMX_EXPORTER_PORT=9404
+LOCATOR_JMX_EXPORTER_PORT="${LOCATOR_JMX_EXPORTER_PORT:-9405}"
+JMX_EXPORTER_PORT="${JMX_EXPORTER_PORT:-9404}"
+JMX_EXPORTER_JAR="${JMX_EXPORTER_JAR:-/opt/jmx-exporter/jmx_prometheus_javaagent.jar}"
+JMX_EXPORTER_CONFIG="${JMX_EXPORTER_CONFIG:-/opt/jmx-exporter/geode-jmx.yml}"
 
 export PATH="$GEODE_HOME/bin:$PATH"
 
@@ -33,6 +36,16 @@ if [[ ! -r "$WAN_PROPERTIES" ]]; then
   exit 1
 fi
 
+if [[ ! -r "$JMX_EXPORTER_JAR" ]]; then
+  echo "JMX exporter jar not readable: $JMX_EXPORTER_JAR" >&2
+  exit 1
+fi
+
+if [[ ! -r "$JMX_EXPORTER_CONFIG" ]]; then
+  echo "JMX exporter config not readable: $JMX_EXPORTER_CONFIG" >&2
+  exit 1
+fi
+
 mkdir -p "$LOCATOR_DIR" "$SERVER_DIR"
 
 echo "=== Starting WAN locator on Antman ==="
@@ -43,7 +56,8 @@ gfsh -e "start locator \
   --hostname-for-clients=$LOCATOR_HOST \
   --properties-file=$WAN_PROPERTIES \
   --J=-Dgemfire.jmx-manager-port=$JMX_PORT \
-  --J=-Dgemfire.http-service-port=$LOCATOR_HTTP_PORT"
+  --J=-Dgemfire.http-service-port=$LOCATOR_HTTP_PORT \
+  --J=-javaagent:$JMX_EXPORTER_JAR=$LOCATOR_JMX_EXPORTER_PORT:$JMX_EXPORTER_CONFIG"
 
 sleep 5
 
@@ -56,7 +70,8 @@ gfsh -e "connect --locator=$LOCATOR_CONNECTION" \
          --hostname-for-clients=$LOCATOR_HOST \
          --http-service-port=$SERVER_HTTP_PORT \
          --groups=$SERVER_GROUPS \
+         --properties-file=$WAN_PROPERTIES \
          --J=-Dgemfire.start-dev-rest-api=true \
-	 --J=-javaagent:/opt/jmx-exporter/jmx_prometheus_javaagent.jar=${JMX_EXPORTER_PORT}:/opt/jmx-exporter/geode-jmx.yml"
+         --J=-javaagent:$JMX_EXPORTER_JAR=$JMX_EXPORTER_PORT:$JMX_EXPORTER_CONFIG"
 
 echo "=== Antman WAN startup complete ==="
