@@ -13,11 +13,12 @@ This document is the single source of truth for the LGTM deployment used to moni
 | Loki | 3.6.7 |
 | Alloy | 1.14.1 |
 | Mimir | 3.0.4 |
+| JMX Exporter | 1.5.0 |
 | Geode monitored by this stack | 1.15.2 |
 
 ## Monitoring Scope
 
-The current monitoring design is centered on BlackWidow as the observability hub, with Antman as the validated Geode scrape target and Hulk using the same ready-to-enable pattern.
+The current monitoring design is centered on BlackWidow as the observability hub. Both Antman and Hulk are active and validated Geode scrape targets.
 
 Current implementation status:
 
@@ -92,9 +93,8 @@ Required network access:
 |  |-------------------------------|       |-------------------------------|  |
 |  | Geode locator1 + server1      |       | Geode locator2 + server2     |  |
 |  | JMX Exporter :9405, :9404     |       | JMX Exporter :9405, :9404    |  |
-|  | Node Exporter :9100 optional  |       | Node Exporter :9100 optional |
-|  +-------------------------------+       | Node Exporter :9100 optional |
-|                                          +-------------------------------+  |
+|  | Node Exporter :9100 optional  |       | Node Exporter :9100 optional |  |
+|  +-------------------------------+       +-------------------------------+  |
 +----------------------------------------------------------------------------+
 
 Metrics: Geode JVM -> JMX Exporter -> Alloy -> Mimir -> Grafana
@@ -107,7 +107,7 @@ Traces:  Instrumented apps -> OTLP -> Tempo -> Grafana
 - Alloy is the only scraper and collector in this design.
 - There is no standalone Prometheus server in the current deployment.
 - Grafana is the single UI for dashboards, metric exploration, logs, and traces.
-- Geode metrics are exposed through the JMX Exporter Java agent on port `9404`.
+- Geode metrics are exposed through the JMX Exporter Java agent — servers on port `9404`, locators on port `9405`.
 - Monitoring configuration should use stable labels such as `job`, `instance`, `app`, and `member`.
 
 ## Installation Baseline
@@ -131,7 +131,11 @@ The repo-side Geode prerequisites for monitoring are:
 
 ### Antman
 
-The Antman start script launches `server1` with the JMX Exporter Java agent:
+The Antman start script launches `locator1` on port 9405 and `server1` on port 9404:
+
+```bash
+--J=-javaagent:/opt/jmx-exporter/jmx_prometheus_javaagent.jar=9405:/opt/jmx-exporter/geode-jmx.yml
+```
 
 ```bash
 --J=-javaagent:/opt/jmx-exporter/jmx_prometheus_javaagent.jar=9404:/opt/jmx-exporter/geode-jmx.yml
@@ -139,7 +143,11 @@ The Antman start script launches `server1` with the JMX Exporter Java agent:
 
 ### Hulk
 
-The Hulk start script launches `server2` with the same pattern:
+The Hulk start script launches `locator2` on port 9405 and `server2` on port 9404:
+
+```bash
+--J=-javaagent:/opt/jmx-exporter/jmx_prometheus_javaagent.jar=9405:/opt/jmx-exporter/geode-jmx.yml
+```
 
 ```bash
 --J=-javaagent:/opt/jmx-exporter/jmx_prometheus_javaagent.jar=9404:/opt/jmx-exporter/geode-jmx.yml
@@ -272,29 +280,53 @@ Start with metrics that are already likely to exist:
 - `scrape_duration_seconds{job="geode"}`
 - `jvm_memory_used_bytes`
 - `jvm_memory_max_bytes`
-- `jvm_gc_pause_seconds_sum`
+- `jvm_gc_collection_seconds_sum`
 
-Suggested first panel set:
+Note: JMX Exporter 1.x uses the OpenMetrics naming convention for memory metrics. The GC metric `jvm_gc_collection_seconds_sum` retains its original name as it is derived directly from JMX MBeans, not the Prometheus Java client library.
 
-1. Members Up
-2. Member Status
-3. Heap Usage Percent
-4. GC Pause Rate
-5. Process Open File Descriptors
-6. CPU Percent if Node Exporter is enabled
-7. Memory Percent if Node Exporter is enabled
+Validated panel set (all live in Grafana):
 
-For the `Members Up` stat, use a query that counts series instead of showing a single raw `up` series:
-
+**Members Up** — stat panel
 ```promql
 count(up{job="geode"} == 1)
 ```
 
-If you want a servers-only stat, use:
-
+**Member Status** — stat panel, shows per-member up/down state (1 = up, 0 = down)
 ```promql
-count(up{job="geode", role="server"} == 1)
+up{job="geode", instance=~"$instance", member=~"$member"}
 ```
+
+**Heap Usage % (per instance)**
+```promql
+100 *
+sum by (instance) (jvm_memory_used_bytes{area="heap", job=~"$job"})
+/
+sum by (instance) (jvm_memory_max_bytes{area="heap", job=~"$job"} > 0)
+```
+
+**Memory Utilization % (per member)**
+```promql
+100 *
+sum by (instance, member) (
+  jvm_memory_used_bytes{job="geode", area="heap", instance=~"$instance", member=~"$member"}
+)
+/
+sum by (instance, member) (
+  jvm_memory_max_bytes{job="geode", area="heap", instance=~"$instance", member=~"$member"} > 0
+)
+```
+
+**GC Pause Rate** — time series, unit: seconds/sec, legend: `{{member}} {{gc}}`
+```promql
+rate(jvm_gc_collection_seconds_sum{job="geode", instance=~"$instance", member=~"$member"}[$__rate_interval])
+```
+
+**Process Open File Descriptors** — time series, legend: `{{member}}`
+```promql
+process_open_fds{job="geode", instance=~"$instance", member=~"$member"}
+```
+
+CPU % and Memory % panels require Node Exporter on `:9100` — not yet enabled.
 
 ### Phase 2: Geode-specific panels
 
@@ -419,13 +451,6 @@ Then narrow to the actual labels observed for Geode-related logs. Do not assume 
 - Full LGTM bootstrap commands are not part of this repo.
 
 ## Expansion Plan
-
-### Add Hulk metrics fully
-
-1. Keep the Hulk server JMX endpoint on `192.168.0.151:9404` and locator endpoint on `192.168.0.151:9405`.
-2. Add the Hulk Alloy scrape targets.
-3. Standardize labels with the Antman target.
-4. Validate both targets in Grafana Explore.
 
 ### Add Geode logs
 

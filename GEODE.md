@@ -327,14 +327,13 @@ remote-locators=192.168.0.14[20334]
 - group: `wan-receiver`
 - start port: `5000`
 - end port: `5000`
-- bind address: `172.22.79.100`
 - hostname-for-senders: `192.168.0.14`
 - `manual-start=false`
 - `if-not-exists=true`
 
 Both start and end port are fixed at `5000` so the receiver always binds to the same port. This matches the Thor portproxy rule and avoids the need to update portproxy rules after each restart.
 
-This makes the receiver reachable externally through Thor while the actual listener stays on Vision.
+`--bind-address` is intentionally omitted. When a specific WSL2 IP such as `172.22.79.100` is persisted into the cluster configuration XML, Geode 1.15.2 considers that element invalid on the next locator restart and crashes with a `NullPointerException` in `removeInvalidGatewayReceivers` before startup completes. Omitting `--bind-address` causes the receiver to bind to all local interfaces, which is safe because external access is gated by Thor's portproxy. `--hostname-for-senders` still ensures Cluster A senders connect through Thor.
 
 ## Region Wiring
 
@@ -683,13 +682,47 @@ Validated recovery pattern:
 Observed failure:
 
 - `Exception in thread "main" java.lang.NullPointerException at org.apache.geode.distributed.internal.InternalConfigurationPersistenceService.removeInvalidGatewayReceivers`
+- The locator crashes before `Cluster configuration service is up and running` is logged.
 
-Root cause:
+#### Root cause
 
-- The persisted cluster configuration disk store (`ConfigDiskDir_locatorB`) contains a gateway-receiver XML element that Geode 1.15.2 considers invalid. A bug in `removeInvalidGatewayReceivers` causes an NPE when attempting to remove it, crashing the locator before startup completes.
-- No dedicated JIRA fix exists for this NPE in the 1.15.x line. The original cleanup logic was introduced in GEODE-5502 (fixed in 1.7.0).
+`create gateway-receiver` was originally run with `--bind-address=172.22.79.100`, which persisted the specific WSL2 IP into the cluster configuration XML inside `ConfigDiskDir_locatorB`:
 
-Recovery steps:
+```xml
+<gateway-receiver bind-address="172.22.79.100" start-port="5000" end-port="5000"
+  hostname-for-senders="192.168.0.14" manual-start="false"/>
+```
+
+On the next locator restart, Geode's `InternalConfigurationPersistenceService` calls `removeInvalidGatewayReceivers` during startup. This method iterates over all cluster configuration groups, reads each gateway receiver XML element, and attempts to validate the `bind-address` against the local network interfaces. When it determines the address is invalid (or its internal lookup returns null), it tries to remove the element by calling into the group's `CacheConfig` object. In Geode 1.15.2 that `CacheConfig` reference is null for the group being processed, causing the NPE before startup completes.
+
+Key distinction between the two address flags:
+
+- `--bind-address` — the local interface the receiver JVM listens on. This value is written into the cluster config XML and is what `removeInvalidGatewayReceivers` validates.
+- `--hostname-for-senders` — the address advertised to WAN senders for connecting. This value is also persisted but is not validated by `removeInvalidGatewayReceivers`.
+
+Only `--bind-address` triggers the bug. `--hostname-for-senders` is safe to persist.
+
+No dedicated JIRA fix exists for this NPE in the 1.15.x line. The original cleanup logic was introduced in GEODE-5502 (fixed in 1.7.0).
+
+#### Investigation path
+
+1. Searched `locatorB.log` for `NullPointer`, `removeInvalid`, `GatewayReceiver`, and `bind-address` patterns via the Query Service API.
+2. Identified two distinct locator startup sequences in the log: the first used `--bind-address=0.0.0.0` (clean start, no crash); the second used `--bind-address=172.22.79.100` (crash on next restart).
+3. Confirmed the gateway receiver was created with `--bind-address=172.22.79.100` between those two starts, persisting the WSL2 IP into the cluster config XML.
+4. Confirmed that removing `--bind-address` from `create gateway-receiver` and restarting locatorB produced a clean startup with `Cluster configuration service is up and running` and no NPE.
+
+#### Fix applied
+
+`scripts/Vision/create_gateway_receiver.sh` was updated to omit `--bind-address`. The receiver now binds to all local interfaces. External access remains controlled by Thor's portproxy, so this is safe. `--hostname-for-senders=192.168.0.14` is retained so Cluster A senders connect through Thor.
+
+Fix validated by:
+
+1. Wiping all persisted data in Cluster B (`ConfigDiskDir_locatorB`, serverB1 disk store).
+2. Starting Cluster B and running `create_gateway_receiver.sh` without `--bind-address`.
+3. Stopping Cluster B, then restarting it — locatorB reached `Cluster configuration service is up and running` without the NPE.
+4. Confirming end-to-end replication: `put` on Cluster A, `get` on Cluster B returned the expected value.
+
+#### Recovery (if already in a broken state)
 
 1. Back up and clear the cluster configuration disk store on Vision:
    ```bash
@@ -712,7 +745,7 @@ Recovery steps:
    gfsh -e "connect --locator=172.22.79.100[20334]" -e "list gateways"
    ```
 
-Expected result: `GatewayReceiver` shows status active on `serverB1` with `Sender Count = 0` until Cluster A connects.
+Expected result: `GatewayReceiver` shows status active on `serverB1` with `Sender Count = 0` until Cluster A connects. On subsequent restarts locatorB must reach `Cluster configuration service is up and running` without exception.
 
 ### senderA Running, not Connected — remote-locators empty
 
