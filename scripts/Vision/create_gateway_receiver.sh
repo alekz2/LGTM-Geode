@@ -11,7 +11,6 @@ SERVER_GROUPS="${SERVER_GROUPS:-wan-receiver}"
 
 GATEWAY_RECEIVER_START_PORT="${GATEWAY_RECEIVER_START_PORT:-5000}"
 GATEWAY_RECEIVER_END_PORT="${GATEWAY_RECEIVER_END_PORT:-5000}"
-GATEWAY_RECEIVER_BIND_ADDRESS="${GATEWAY_RECEIVER_BIND_ADDRESS:-172.22.79.100}"
 GATEWAY_RECEIVER_HOSTNAME_FOR_SENDERS="${GATEWAY_RECEIVER_HOSTNAME_FOR_SENDERS:-192.168.0.14}"
 
 if [[ ! -x "$GFSH_BIN" ]]; then
@@ -19,7 +18,12 @@ if [[ ! -x "$GFSH_BIN" ]]; then
   exit 1
 fi
 
-CREATE_CMD="create gateway-receiver --groups=${SERVER_GROUPS} --start-port=${GATEWAY_RECEIVER_START_PORT} --end-port=${GATEWAY_RECEIVER_END_PORT} --bind-address=${GATEWAY_RECEIVER_BIND_ADDRESS} --hostname-for-senders=${GATEWAY_RECEIVER_HOSTNAME_FOR_SENDERS} --manual-start=false --if-not-exists=true"
+# --bind-address is intentionally omitted so the receiver binds to all local interfaces.
+# Persisting a specific WSL2 IP (172.22.79.100) in the cluster config XML triggers a
+# NullPointerException in Geode 1.15.2's removeInvalidGatewayReceivers on the next
+# locator restart. External access is controlled by Thor's portproxy, so binding all
+# interfaces is safe. --hostname-for-senders still routes Cluster A senders through Thor.
+CREATE_CMD="create gateway-receiver --groups=${SERVER_GROUPS} --start-port=${GATEWAY_RECEIVER_START_PORT} --end-port=${GATEWAY_RECEIVER_END_PORT} --hostname-for-senders=${GATEWAY_RECEIVER_HOSTNAME_FOR_SENDERS} --manual-start=false --if-not-exists=true"
 
 echo "=== Creating GatewayReceiver on Vision ==="
 "$GFSH_BIN" \
