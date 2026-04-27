@@ -24,7 +24,7 @@ Current implementation status:
 
 - Phase 1 baseline panels (up, heap, GC, file descriptors) are live and validated in Grafana.
 - Phase 2 Geode-specific panels (gets/puts rates, request latency, region entry count, region hit ratio, gateway sender health, member CPU) are live and validated in Grafana as of 2026-04-27.
-- Logs exist for the broader LGTM environment, but Geode-specific log labeling still needs validation in Grafana Explore.
+- Geode log ingestion is live on Antman and Hulk via Alloy → Loki, validated in Grafana Explore as of 2026-04-27.
 - Tempo endpoints are part of the platform design, but Geode-adjacent tracing is not yet implemented.
 
 ## Host Inventory
@@ -247,11 +247,7 @@ prometheus.scrape "geode_hulk_server2" {
 }
 ```
 
-Recommended follow-up:
-
-- Add separate scrape jobs for Node Exporter on `:9100`.
-- Standardize labels across all Geode members before building more dashboards.
-- Add relabeling only after the current label set is validated in Grafana Explore.
+Node Exporter scraping is active on Antman and Hulk via the Alloy agents installed on those hosts. No additional scrape jobs are needed.
 
 ## Grafana Data Sources
 
@@ -511,13 +507,38 @@ Use Explore to find the real metric set before building Geode-specific dashboard
 
 ### Loki validation
 
-Before creating log panels, inspect the real labels in Loki:
+Confirmed Geode log label set as of 2026-04-27 (from live Loki `/loki/api/v1/labels`):
+
+| Label | Values |
+| --- | --- |
+| `job` | `geode` |
+| `app` | `apache-geode` |
+| `cluster` | `production` |
+| `instance` | `antman`, `hulk` |
+| `host` | `antman`, `hulk` |
+| `member` | `locator1`, `server1`, `locator2`, `server2` |
+| `log_type` | `locator`, `server` |
+| `filename` | full path to the log file, added automatically by Alloy |
+
+Validated LogQL queries:
 
 ```logql
-{}
+{job="geode"}
 ```
 
-Then narrow to the actual labels observed for Geode-related logs. Do not assume `app="apache_geode"` or any other label until it is confirmed.
+```logql
+{job="geode", instance="antman"}
+```
+
+```logql
+{job="geode", member="server1"}
+```
+
+```logql
+{job="geode", log_type="locator"}
+```
+
+Note: Geode members that are idle for more than one hour will not appear in the default Loki label window. Set the Grafana Explore time range to **Last 6 hours** or wider when querying a cluster that has been quiet. The data is present in Loki — it is a query window issue, not a pipeline failure.
 
 ## Deployment Sequence
 
@@ -549,7 +570,6 @@ Then narrow to the actual labels observed for Geode-related logs. Do not assume 
 
 ## Current Gaps
 
-- Geode-specific log labeling is not yet documented end-to-end.
 - Trace instrumentation for Geode-adjacent workloads is not implemented.
 - TLS, authentication, and secret management are not documented here.
 - Retention, storage sizing, and backup for Loki, Tempo, and Mimir are not covered.
@@ -557,12 +577,20 @@ Then narrow to the actual labels observed for Geode-related logs. Do not assume 
 
 ## Expansion Plan
 
-### Add Geode logs
+### Add Geode logs — complete
 
-1. Identify the Geode log locations on Antman and Hulk.
-2. Add Alloy file or journal ingestion.
-3. Attach host and member labels.
-4. Verify the final Loki label set before creating dashboard panels.
+Alloy agents on Antman and Hulk tail the following log files and forward to Loki on BlackWidow:
+
+| Host | Member | Log path |
+| --- | --- | --- |
+| Antman | locator1 | `/home/alex/geode_cluster/locator1/locator1.log` |
+| Antman | locator1 | `/home/alex/geode_cluster/locator1/pulse.log` |
+| Antman | server1 | `/home/alex/geode_cluster/server1/server1.log` |
+| Hulk | locator2 | `/home/alex/geode_cluster/locator2/locator2.log` |
+| Hulk | locator2 | `/home/alex/geode_cluster/locator2/pulse.log` |
+| Hulk | server2 | `/home/alex/geode_cluster/server2/server2.log` |
+
+Config location on each host: `/etc/alloy/config.alloy` under the `loki.source.file "geode"` component.
 
 ### Add tracing
 
@@ -570,5 +598,4 @@ Then narrow to the actual labels observed for Geode-related logs. Do not assume 
 2. Send OTLP data to BlackWidow on `4317` or `4318`.
 3. Correlate traces with logs and metrics in Grafana.
 
-
-## dummy line
+Note: The OTLP receiver and Tempo exporter are already wired in the Alloy config on Antman and Hulk — the infrastructure is ready, only application instrumentation is missing.
