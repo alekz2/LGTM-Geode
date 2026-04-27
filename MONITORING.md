@@ -22,7 +22,8 @@ The current monitoring design is centered on BlackWidow as the observability hub
 
 Current implementation status:
 
-- Metrics from Geode are the primary validated signal path.
+- Phase 1 baseline panels (up, heap, GC, file descriptors) are live and validated in Grafana.
+- Phase 2 Geode-specific panels (gets/puts rates, request latency, region entry count, region hit ratio, gateway sender health, member CPU) are live and validated in Grafana as of 2026-04-27.
 - Logs exist for the broader LGTM environment, but Geode-specific log labeling still needs validation in Grafana Explore.
 - Tempo endpoints are part of the platform design, but Geode-adjacent tracing is not yet implemented.
 
