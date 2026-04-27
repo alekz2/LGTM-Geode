@@ -330,18 +330,122 @@ CPU % and Memory % panels require Node Exporter on `:9100` — not yet enabled.
 
 ### Phase 2: Geode-specific panels
 
-Only add Geode-specific panels after validating the real metric names exported by the JMX endpoint.
+Metric names confirmed from live JMX exporter endpoints on 2026-04-26. All `gemfire_*` metrics carry at minimum the `member` label from the MBean object name. Alloy adds `job`, `instance`, `app`, and `role` at scrape time. Region metrics also carry `name` (region path, e.g. `/Activity`) and `type="Member"`. Gateway sender metrics carry `gatewaysender` (sender ID) and `type="Member"`.
 
-Candidate panel categories:
+#### Additional dashboard variable
 
-- Cache gets and puts per second
-- Operation error rate
-- Region entry count
-- Region hit ratio
-- Off-heap usage
-- Request latency percentiles
+Add a `$region` variable before building the region panels:
 
-Do not assume placeholder names such as `geode_gets_total` or `geode_region_entries` exist until confirmed.
+- Query: `label_values(gemfire_region_entrycount{job="geode"}, name)`
+- Label: `Region`
+- Default: `.*` (all)
+
+#### Gets and Puts Per Second
+
+**Member GET Rate** — time series, unit: ops/sec, legend: `{{member}}`
+```promql
+gemfire_member_getsrate{job="geode", instance=~"$instance", member=~"$member"}
+```
+
+**Member PUT Rate** — time series, unit: ops/sec, legend: `{{member}}`
+```promql
+gemfire_member_putsrate{job="geode", instance=~"$instance", member=~"$member"}
+```
+
+**Cache Server GET Request Rate** — time series, unit: req/sec, legend: `{{member}}`
+```promql
+gemfire_cacheserver_getrequestrate{job="geode", instance=~"$instance", member=~"$member"}
+```
+
+**Cache Server PUT Request Rate** — time series, unit: req/sec, legend: `{{member}}`
+```promql
+gemfire_cacheserver_putrequestrate{job="geode", instance=~"$instance", member=~"$member"}
+```
+
+#### Request Latency
+
+Geode reports these as average latency in nanoseconds.
+
+**GET Request Avg Latency** — time series, unit: ns, legend: `{{member}}`
+```promql
+gemfire_cacheserver_getrequestavglatency{job="geode", instance=~"$instance", member=~"$member"}
+```
+
+**PUT Request Avg Latency** — time series, unit: ns, legend: `{{member}}`
+```promql
+gemfire_cacheserver_putrequestavglatency{job="geode", instance=~"$instance", member=~"$member"}
+```
+
+**Member GET Avg Latency** — time series, unit: ns, legend: `{{member}}`
+```promql
+gemfire_member_getsavglatency{job="geode", instance=~"$instance", member=~"$member"}
+```
+
+**Member PUT Avg Latency** — time series, unit: ns, legend: `{{member}}`
+```promql
+gemfire_member_putsavglatency{job="geode", instance=~"$instance", member=~"$member"}
+```
+
+#### Region Entry Count
+
+**Region Entry Count** — time series, legend: `{{member}} {{name}}`
+```promql
+gemfire_region_entrycount{job="geode", instance=~"$instance", member=~"$member", name=~"$region"}
+```
+
+Note: The `name` label contains the full region path including the leading `/` (e.g. `/Activity`).
+
+#### Region Hit Ratio
+
+**Region Hit Ratio** — time series, unit: ratio (0–1), legend: `{{member}} {{name}}`
+```promql
+gemfire_region_hitratio{job="geode", instance=~"$instance", member=~"$member", name=~"$region"} >= 0
+```
+
+The metric returns `-1.0` when no get operations have occurred yet. The `>= 0` guard suppresses uninitialised values so the panel stays blank rather than showing -1.
+
+#### Off-Heap Usage
+
+Off-heap memory is not configured in this lab, so these metrics currently show `0`. The panels remain useful as a baseline and become meaningful if off-heap is enabled later.
+
+**Off-Heap Used Bytes** — time series, unit: bytes, legend: `{{member}}`
+```promql
+gemfire_member_offheapusedmemory{job="geode", instance=~"$instance", member=~"$member"}
+```
+
+**Off-Heap Used %** — gauge, unit: %, legend: `{{member}}`
+```promql
+100 *
+gemfire_member_offheapusedmemory{job="geode", instance=~"$instance", member=~"$member"}
+/
+(gemfire_member_offheapmaxmemory{job="geode", instance=~"$instance", member=~"$member"} > 0)
+```
+
+#### Gateway Sender Health
+
+**Sender Connected** — stat panel, 1 = connected / 0 = disconnected, legend: `{{member}} {{gatewaysender}}`
+```promql
+gemfire_gatewaysender_connected{job="geode", instance=~"$instance", member=~"$member"}
+```
+
+**Sender Event Queue Depth** — time series, unit: events, legend: `{{member}} {{gatewaysender}}`
+```promql
+gemfire_gatewaysender_eventqueuesize{job="geode", instance=~"$instance", member=~"$member"}
+```
+
+**Sender Batches Dispatched Rate** — time series, unit: batches/sec, legend: `{{member}} {{gatewaysender}}`
+```promql
+gemfire_gatewaysender_batchesdispatchedrate{job="geode", instance=~"$instance", member=~"$member"}
+```
+
+#### Member CPU Usage
+
+**CPU Usage % (per member)** — time series, unit: %, legend: `{{member}}`
+```promql
+gemfire_member_cpuusage{job="geode", instance=~"$instance", member=~"$member"}
+```
+
+This is Geode's own per-member CPU measurement. For host-level CPU, Node Exporter on `:9100` is still required and not yet enabled.
 
 ## Validation Workflow
 
