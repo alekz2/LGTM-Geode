@@ -13,6 +13,7 @@ This document is the single source of truth for the LGTM deployment used to moni
 | Loki | 3.6.7 |
 | Alloy | 1.14.1 |
 | Mimir | 3.0.4 |
+| Tempo | 2.10.0 |
 | JMX Exporter | 1.5.0 |
 | Geode monitored by this stack | 1.15.2 |
 
@@ -102,6 +103,90 @@ Metrics: Geode JVM -> JMX Exporter -> Alloy -> Mimir -> Grafana
 Logs:    Host or container logs -> Alloy -> Loki -> Grafana
 Traces:  Instrumented apps -> OTLP -> Tempo -> Grafana
 ```
+
+## Configuration File Reference
+
+All config files confirmed from live host inspection on 2026-04-27.
+
+### BlackWidow — Docker stack
+
+Stack root: `/home/alex/observability-lgtm/`
+
+Docker Compose file: `/home/alex/observability-lgtm/docker-compose.yml`
+
+#### Alloy
+
+| Item | Path |
+| --- | --- |
+| Config (host) | `/home/alex/observability-lgtm/alloy/config.alloy` |
+| Config (container) | `/etc/alloy/config.alloy` (bind-mounted read-only) |
+| Data volume | `observability-lgtm_alloy-data` → `/var/lib/alloy/data` |
+| Docker socket | `/var/run/docker.sock` → `/var/run/docker.sock` (read-only) |
+| Previous config backup | `/home/alex/observability-lgtm/alloy/config.alloy.260404` |
+
+#### Grafana
+
+| Item | Path |
+| --- | --- |
+| Provisioning dir (host) | `/home/alex/observability-lgtm/grafana/provisioning` |
+| Provisioning dir (container) | `/etc/grafana/provisioning` (bind-mounted) |
+| Data source definitions | `/home/alex/observability-lgtm/grafana/provisioning/datasources/datasources.yaml` |
+| Data volume | `observability-lgtm_grafana-storage` → `/var/lib/grafana` |
+
+#### Loki
+
+| Item | Path |
+| --- | --- |
+| Config | Uses container default — no config file bind-mounted |
+| Data volume | `observability-lgtm_loki-data` → `/loki` |
+
+#### Mimir
+
+| Item | Path |
+| --- | --- |
+| Config (host) | `/home/alex/observability-lgtm/mimir/mimir.yaml` |
+| Config (container) | `/etc/mimir.yaml` (bind-mounted read-only) |
+| Data volume | `observability-lgtm_mimir-data` → `/data` |
+
+#### Tempo
+
+| Item | Path |
+| --- | --- |
+| Config (host) | `/home/alex/observability-lgtm/tempo/tempo.yaml` |
+| Config (container) | `/etc/tempo.yaml` (bind-mounted read-only) |
+| Data volume | `observability-lgtm_tempo-data` → `/var/tempo` |
+
+### Antman — Alloy agent (systemd, not Docker)
+
+| Item | Path |
+| --- | --- |
+| Alloy config | `/etc/alloy/config.alloy` |
+| Geode locator1 logs | `/home/alex/geode_cluster/locator1/locator1.log` |
+| Geode locator1 pulse log | `/home/alex/geode_cluster/locator1/pulse.log` |
+| Geode server1 logs | `/home/alex/geode_cluster/server1/server1.log` |
+| JMX Exporter JAR | `/opt/jmx-exporter/jmx_prometheus_javaagent.jar` |
+| JMX Exporter config | `/opt/jmx-exporter/geode-jmx.yml` |
+
+### Hulk — Alloy agent (systemd, not Docker)
+
+| Item | Path |
+| --- | --- |
+| Alloy config | `/etc/alloy/config.alloy` |
+| Geode locator2 logs | `/home/alex/geode_cluster/locator2/locator2.log` |
+| Geode locator2 pulse log | `/home/alex/geode_cluster/locator2/pulse.log` |
+| Geode server2 logs | `/home/alex/geode_cluster/server2/server2.log` |
+| JMX Exporter JAR | `/opt/jmx-exporter/jmx_prometheus_javaagent.jar` |
+| JMX Exporter config | `/opt/jmx-exporter/geode-jmx.yml` |
+
+### Ironman — ActivityClientApp (Windows)
+
+| Item | Path |
+| --- | --- |
+| Project root | `d:\Alex\Work\Installs\LGTM-Geode\client\` |
+| Maven build file | `d:\Alex\Work\Installs\LGTM-Geode\client\pom.xml` |
+| Application source | `d:\Alex\Work\Installs\LGTM-Geode\client\src\main\java\lab\geode\client\ActivityClientApp.java` |
+| OTel Java agent | `d:\Alex\Work\Installs\LGTM-Geode\client\opentelemetry-javaagent.jar` |
+| Run command | `mvn compile exec:exec` from the `client\` directory |
 
 ## Design Rules
 
