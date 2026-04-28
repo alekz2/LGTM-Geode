@@ -25,7 +25,7 @@ Current implementation status:
 - Phase 1 baseline panels (up, heap, GC, file descriptors) are live and validated in Grafana.
 - Phase 2 Geode-specific panels (gets/puts rates, request latency, region entry count, region hit ratio, gateway sender health, member CPU) are live and validated in Grafana as of 2026-04-27.
 - Geode log ingestion is live on Antman and Hulk via Alloy → Loki, validated in Grafana Explore as of 2026-04-27.
-- Tempo endpoints are part of the platform design, but Geode-adjacent tracing is not yet implemented.
+- ActivityClientApp tracing is live via OTel Java agent → Tempo, validated in Grafana as of 2026-04-27. Instrumented spans: `geode.connect`, `geode.subscribe`, `geode.put`.
 
 ## Host Inventory
 
@@ -570,7 +570,6 @@ Note: Geode members that are idle for more than one hour will not appear in the 
 
 ## Current Gaps
 
-- Trace instrumentation for Geode-adjacent workloads is not implemented.
 - TLS, authentication, and secret management are not documented here.
 - Retention, storage sizing, and backup for Loki, Tempo, and Mimir are not covered.
 - Full LGTM bootstrap commands are not part of this repo.
@@ -592,10 +591,37 @@ Alloy agents on Antman and Hulk tail the following log files and forward to Loki
 
 Config location on each host: `/etc/alloy/config.alloy` under the `loki.source.file "geode"` component.
 
-### Add tracing
+### Add tracing — complete
 
-1. Instrument client applications or services that call Geode.
-2. Send OTLP data to BlackWidow on `4317` or `4318`.
-3. Correlate traces with logs and metrics in Grafana.
+ActivityClientApp on Ironman is instrumented with the OpenTelemetry Java agent and sends traces directly to Tempo on BlackWidow via OTLP HTTP. Validated in Grafana as of 2026-04-27.
 
-Note: The OTLP receiver and Tempo exporter are already wired in the Alloy config on Antman and Hulk — the infrastructure is ready, only application instrumentation is missing.
+#### Setup
+
+| Item | Detail |
+| --- | --- |
+| OTel Java agent | `opentelemetry-javaagent.jar` (v2.27.0) at `d:\Alex\Work\Installs\LGTM-Geode\client\` |
+| Transport | OTLP HTTP → `http://192.168.0.153:4318` (direct to Tempo, no Alloy in path) |
+| Build | `d:\Alex\Work\Installs\LGTM-Geode\client\pom.xml` — `geode-core 1.15.1` + `opentelemetry-api 1.38.0` |
+| Run | `mvn compile exec:exec` from the `client\` directory |
+
+#### Instrumented spans
+
+| Span name | Operation | Key attributes |
+| --- | --- | --- |
+| `geode.connect` | ClientCache creation and locator handshake | `geode.locator.host`, `geode.locator.port` |
+| `geode.subscribe` | Region interest registration | `geode.region` |
+| `geode.put` | Each region.put call | `geode.region`, `geode.key` |
+
+#### Validated TraceQL queries
+
+```
+{resource.service.name="activity-client"}
+```
+
+```
+{resource.service.name="activity-client"} | select(span.geode.region)
+```
+
+Note: TraceQL uses `resource.service.name`, not `service.name`. Grafana's Tempo data source passes the query directly — use the TraceQL tab in Explore, not the Search tab, for attribute-based filtering.
+
+Note: Tempo's ingester requires ~15 seconds after container start before it accepts search queries. If `/ready` returns `Ingester not ready`, wait and retry.
