@@ -15,10 +15,16 @@ import org.apache.geode.cache.client.ClientRegionFactory;
 import org.apache.geode.cache.client.ClientRegionShortcut;
 import org.apache.geode.cache.util.CacheListenerAdapter;
 
+import io.opentelemetry.api.GlobalOpenTelemetry;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Scope;
+
 public final class ActivityClientApp {
   private static final String DEFAULT_LOCATOR_HOST = "192.168.0.150";
   private static final int DEFAULT_LOCATOR_PORT = 10334;
   private static final String DEFAULT_REGION_NAME = "Activity";
+  private static final Tracer TRACER = GlobalOpenTelemetry.getTracer("lab.geode.client");
 
   private ActivityClientApp() {
   }
@@ -36,17 +42,24 @@ public final class ActivityClientApp {
   }
 
   private static ClientCache createCache(Config config) {
-    System.out.printf(
-        "Connecting to locator %s:%d and region %s%n",
-        config.locatorHost,
-        Integer.valueOf(config.locatorPort),
-        config.regionName);
-
-    return new ClientCacheFactory()
-        .addPoolLocator(config.locatorHost, config.locatorPort)
-        .setPoolSubscriptionEnabled(true)
-        .set("log-level", "warn")
-        .create();
+    Span span = TRACER.spanBuilder("geode.connect")
+        .setAttribute("geode.locator.host", config.locatorHost)
+        .setAttribute("geode.locator.port", (long) config.locatorPort)
+        .startSpan();
+    try (Scope scope = span.makeCurrent()) {
+      System.out.printf(
+          "Connecting to locator %s:%d and region %s%n",
+          config.locatorHost,
+          Integer.valueOf(config.locatorPort),
+          config.regionName);
+      return new ClientCacheFactory()
+          .addPoolLocator(config.locatorHost, config.locatorPort)
+          .setPoolSubscriptionEnabled(true)
+          .set("log-level", "warn")
+          .create();
+    } finally {
+      span.end();
+    }
   }
 
   private static Region<String, String> createRegion(ClientCache cache, Config config) {
@@ -74,13 +87,28 @@ public final class ActivityClientApp {
   }
 
   private static void subscribe(Region<String, String> region) {
-    region.registerInterestForAllKeys(InterestResultPolicy.NONE);
-    System.out.printf("Subscribed to all keys in region %s%n", region.getName());
+    Span span = TRACER.spanBuilder("geode.subscribe")
+        .setAttribute("geode.region", region.getName())
+        .startSpan();
+    try (Scope scope = span.makeCurrent()) {
+      region.registerInterestForAllKeys(InterestResultPolicy.NONE);
+      System.out.printf("Subscribed to all keys in region %s%n", region.getName());
+    } finally {
+      span.end();
+    }
   }
 
   private static void publish(Region<String, String> region, String key, String value) {
-    region.put(key, value);
-    System.out.printf("Published key=%s value=%s%n", key, value);
+    Span span = TRACER.spanBuilder("geode.put")
+        .setAttribute("geode.region", region.getName())
+        .setAttribute("geode.key", key)
+        .startSpan();
+    try (Scope scope = span.makeCurrent()) {
+      region.put(key, value);
+      System.out.printf("Published key=%s value=%s%n", key, value);
+    } finally {
+      span.end();
+    }
   }
 
   private static void interactivePublishLoop(Region<String, String> region) throws IOException {
