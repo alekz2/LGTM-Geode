@@ -1,0 +1,30 @@
+# Snippet to add to /home/alex/observability-lgtm/docker-compose.yml on BlackWidow.
+# Paste this service block into the existing services: section alongside grafana, mimir, loki, tempo, alloy.
+#
+# Deploy commands (run on BlackWidow):
+#   cd /home/alex/observability-lgtm/edge-ai/inference
+#   docker build -t geode-ai:latest .
+#   cd /home/alex/observability-lgtm
+#   docker compose up -d geode-ai
+#   docker compose logs geode-ai
+#   curl http://localhost:9500/health
+#   curl http://localhost:9500/metrics | grep geode_anomaly
+
+services:
+  geode-ai:
+    image: geode-ai:latest
+    container_name: geode-ai
+    restart: unless-stopped
+    ports:
+      - "9500:9500"
+    volumes:
+      - /home/alex/observability-lgtm/edge-ai/models:/models:ro
+      - /home/alex/observability-lgtm/edge-ai/features.json:/features.json:ro
+    environment:
+      GEODE_AI_MIMIR_URL: "http://mimir:9009/prometheus"
+      GEODE_AI_MODEL_PATH: "/models/geode_anomaly.onnx"
+      GEODE_AI_POLL_INTERVAL: "60"
+      GEODE_AI_LOOKBACK_MINUTES: "5"
+      GEODE_AI_MEMBERS: "server1:antman,server2:hulk"
+    depends_on:
+      - mimir

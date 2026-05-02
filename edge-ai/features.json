@@ -1,0 +1,76 @@
+[
+  {
+    "index": 0,
+    "name": "heap_used_ratio",
+    "numerator_metric": "jvm_memory_used_bytes",
+    "denominator_metric": "jvm_memory_max_bytes",
+    "extra_labels": {"area": "heap"},
+    "derived": "ratio",
+    "description": "Heap used / heap max"
+  },
+  {
+    "index": 1,
+    "name": "gc_pause_rate",
+    "metric": "jvm_gc_collection_seconds_sum",
+    "derived": "rate",
+    "sum_by_member": true,
+    "description": "Rate of GC pause seconds (all GC types summed)"
+  },
+  {
+    "index": 2,
+    "name": "gc_count_rate",
+    "metric": "jvm_gc_collection_seconds_count",
+    "derived": "rate",
+    "sum_by_member": true,
+    "description": "Rate of GC collections (all GC types summed)"
+  },
+  {
+    "index": 3,
+    "name": "gets_rate",
+    "metric": "gemfire_member_getsrate",
+    "derived": "raw",
+    "description": "Geode member GET ops/sec"
+  },
+  {
+    "index": 4,
+    "name": "puts_rate",
+    "metric": "gemfire_member_putsrate",
+    "derived": "raw",
+    "description": "Geode member PUT ops/sec"
+  },
+  {
+    "index": 5,
+    "name": "get_latency_ns",
+    "metric": "gemfire_cacheserver_getrequestavglatency",
+    "derived": "raw",
+    "description": "Geode cache server GET avg latency (ns)"
+  },
+  {
+    "index": 6,
+    "name": "put_latency_ns",
+    "metric": "gemfire_cacheserver_putrequestavglatency",
+    "derived": "raw",
+    "description": "Geode cache server PUT avg latency (ns)"
+  },
+  {
+    "index": 7,
+    "name": "cpu_usage",
+    "metric": "gemfire_member_cpuusage",
+    "derived": "raw",
+    "description": "Geode member CPU usage percent"
+  },
+  {
+    "index": 8,
+    "name": "get_request_rate",
+    "metric": "gemfire_cacheserver_getrequestrate",
+    "derived": "raw",
+    "description": "Geode cache server GET request rate"
+  },
+  {
+    "index": 9,
+    "name": "put_request_rate",
+    "metric": "gemfire_cacheserver_putrequestrate",
+    "derived": "raw",
+    "description": "Geode cache server PUT request rate"
+  }
+]
