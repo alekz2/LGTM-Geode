@@ -1,0 +1,114 @@
+logging {
+  level  = "info"
+  format = "logfmt"
+}
+
+// --------------------
+// Logs (system logs)
+// --------------------
+local.file_match "system_logs" {
+  path_targets = [
+    {
+      __path__ = "/var/log/messages",
+      job      = "system",
+      host     = "warmachine",
+    },
+    {
+      __path__ = "/var/log/secure",
+      job      = "system",
+      host     = "warmachine",
+    },
+    {
+      __path__ = "/var/log/*.log",
+      job      = "system",
+      host     = "warmachine",
+    },
+  ]
+}
+
+loki.source.file "system" {
+  targets    = local.file_match.system_logs.targets
+  forward_to = [loki.write.loki.receiver]
+}
+
+
+// --------------------
+// Logs (Geode)
+// --------------------
+local.file_match "geode_logs" {
+  path_targets = [
+    {
+      __path__ = "/home/alex/geode_cluster_b/serverB2/*.log",
+      job      = "geode",
+      app      = "apache-geode",
+      cluster  = "production",
+      instance = "warmachine",
+      host     = "warmachine",
+      member   = "serverB2",
+      log_type = "server",
+    },
+  ]
+}
+
+loki.source.file "geode" {
+  targets    = local.file_match.geode_logs.targets
+  forward_to = [loki.write.loki.receiver]
+}
+
+
+loki.write "loki" {
+  endpoint {
+    url = "http://192.168.0.153:3100/loki/api/v1/push"
+  }
+}
+
+// --------------------
+// Metrics (node exporter)
+// --------------------
+prometheus.exporter.unix "node" {}
+
+discovery.relabel "node" {
+  targets = prometheus.exporter.unix.node.targets
+
+  rule {
+    target_label = "instance"
+    replacement  = "warmachine"
+  }
+
+  rule {
+    target_label = "job"
+    replacement  = "node"
+  }
+}
+
+prometheus.scrape "node" {
+  targets         = discovery.relabel.node.output
+  forward_to      = [prometheus.remote_write.mimir.receiver]
+  scrape_interval = "15s"
+}
+
+// --------------------
+// Metrics (Geode JMX — local scrape, push to Mimir)
+// BlackWidow cannot reach 172.22.79.100 directly; Alloy scrapes localhost and pushes outbound.
+// --------------------
+prometheus.scrape "geode_warmachine_serverb2" {
+  targets = [
+    {
+      __address__ = "127.0.0.1:9404",
+      instance    = "warmachine",
+      job         = "geode",
+      app         = "apache-geode",
+      member      = "serverB2",
+      role        = "server",
+    },
+  ]
+
+  scrape_interval = "15s"
+  forward_to      = [prometheus.remote_write.mimir.receiver]
+}
+
+prometheus.remote_write "mimir" {
+  endpoint {
+    url = "http://192.168.0.153:9009/api/v1/push"
+  }
+}
