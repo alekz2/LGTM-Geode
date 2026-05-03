@@ -29,6 +29,7 @@ Current implementation status:
 - Phase 2 Geode-specific panels (gets/puts rates, request latency, region entry count, region hit ratio, gateway sender health, member CPU) are live and validated in Grafana as of 2026-04-27.
 - Geode log ingestion is live on Antman and Hulk via Alloy → Loki, validated in Grafana Explore as of 2026-04-27.
 - ActivityClientApp tracing is live via OTel Java agent → Tempo, validated in Grafana as of 2026-04-27. Instrumented spans: `geode.connect`, `geode.subscribe`, `geode.put`.
+- Phase 3 Cluster B monitoring (Vision + Warmachine metrics and logs) — in progress. JMX Exporter and Alloy agent installation on both hosts required before start scripts are run.
 
 ## Host Inventory
 
@@ -37,6 +38,8 @@ Current implementation status:
 | BlackWidow | 192.168.0.153 | Ubuntu 24.04 | Monitoring hub for Grafana, Loki, Tempo, Mimir, Alloy | Active |
 | Antman | 192.168.0.150 | Rocky Linux 8 | Cluster A locator1 and server1, both expose JMX Exporter for Geode metrics | Active |
 | Hulk | 192.168.0.151 | RHEL 8 | Cluster A locator2 and server2, both expose JMX Exporter for Geode metrics | Active |
+| Vision | 172.22.79.100 (WSL2) | Ubuntu 24.04 | Cluster B locatorB, serverB1, GatewayReceiver; JMX Exporter + Alloy agent | Planned |
+| Warmachine | 172.22.79.100 (WSL2) | RHEL 8 | Cluster B serverB2; JMX Exporter + Alloy agent | Planned |
 
 ## Port Map
 
@@ -68,6 +71,21 @@ Current implementation status:
 | 9405 | Locator JMX Exporter | Prometheus-format JVM and Geode metrics for locator2 |
 | 9100 | Node Exporter | Optional host-level system metrics |
 
+### Vision
+
+| Port | Service | Purpose |
+| --- | --- | --- |
+| 9404 | serverB1 JMX Exporter | Scraped by local Alloy agent only — not exposed externally |
+| 9405 | locatorB JMX Exporter | Scraped by local Alloy agent only — not exposed externally |
+| 9100 | Node Exporter | Optional host-level system metrics |
+
+### Warmachine
+
+| Port | Service | Purpose |
+| --- | --- | --- |
+| 9404 | serverB2 JMX Exporter | Scraped by local Alloy agent only — not exposed externally |
+| 9100 | Node Exporter | Optional host-level system metrics |
+
 Required network access:
 
 - Allow BlackWidow to reach `192.168.0.150:9404` and `192.168.0.150:9405`.
@@ -84,26 +102,34 @@ Required network access:
                          | Loki                             |
                          | Tempo                            |
                          | Mimir                            |
-                         | Alloy                            |
-                         +----------------+-----------------+
-                                          ^
-                                          |
-                              scrape      | remote_write / push
-                                          |
-+-----------------------------------------+--------------------------------+
-|                                                                            |
-|  +-------------------------------+       +-------------------------------+  |
-|  | Antman / 192.168.0.150        |       | Hulk / 192.168.0.151         |  |
-|  |-------------------------------|       |-------------------------------|  |
-|  | Geode locator1 + server1      |       | Geode locator2 + server2     |  |
-|  | JMX Exporter :9405, :9404     |       | JMX Exporter :9405, :9404    |  |
-|  | Node Exporter :9100 optional  |       | Node Exporter :9100 optional |  |
-|  +-------------------------------+       +-------------------------------+  |
-+----------------------------------------------------------------------------+
+                         | Alloy (scrapes Cluster A only)   |
+                         +-------+----------+--------------+
+                                 ^          ^
+                       scrape    |          | push (remote_write / logs)
+                                 |          |
+          +----------------------+    +-----+----------------------------------------------+
+          |                           |                                                      |
+  +-------+--------------------+      |  Thor / 192.168.0.14 (WSL2 NAT host)                |
+  | Cluster A                  |      |  +---------------------------+  +------------------+|
+  |                            |      |  | Vision / 172.22.79.100    |  | Warmachine        ||
+  | Antman / 192.168.0.150     |      |  |---------------------------|  | 172.22.79.100     ||
+  | locator1 + server1         |      |  | locatorB + serverB1       |  | serverB2          ||
+  | JMX :9405, :9404           |      |  | JMX :9405, :9404          |  | JMX :9404         ||
+  | Alloy (systemd)            |      |  | Alloy (systemd) -------+  |  | Alloy (systemd) --||
+  |                            |      |  +------------------------+--+  +----------------+--+|
+  | Hulk / 192.168.0.151       |      |                           |                      |   |
+  | locator2 + server2         |      |                           +----------+-----------+   |
+  | JMX :9405, :9404           |      |                           push via WSL2 NAT          |
+  | Alloy (systemd)            |      +------------------------------------------------------+
+  +----------------------------+
 
-Metrics: Geode JVM -> JMX Exporter -> Alloy -> Mimir -> Grafana
-Logs:    Host or container logs -> Alloy -> Loki -> Grafana
-Traces:  Instrumented apps -> OTLP -> Tempo -> Grafana
+Cluster A metrics: JMX Exporter -> BlackWidow Alloy (pull/scrape) -> Mimir
+Cluster B metrics: JMX Exporter -> Vision/Warmachine Alloy (local scrape + push) -> Mimir
+Logs:              Geode log files -> Alloy (on each host) -> Loki
+Traces:            ActivityClientApp (Ironman) -> OTLP HTTP -> Tempo
+
+Note: BlackWidow cannot initiate connections to 172.22.79.100 (WSL2 private network).
+      Vision and Warmachine Alloy agents push outbound through Thor's WSL2 NAT to BlackWidow.
 ```
 
 ## Configuration File Reference
@@ -180,6 +206,35 @@ Docker Compose file: `/home/alex/observability-lgtm/docker-compose.yml`
 | JMX Exporter JAR | `/opt/jmx-exporter/jmx_prometheus_javaagent.jar` |
 | JMX Exporter config | `/opt/jmx-exporter/geode-jmx.yml` |
 
+### Vision — Alloy agent (systemd, not Docker)
+
+| Item | Path |
+| --- | --- |
+| Alloy config | `/etc/alloy/config.alloy` |
+| Geode locatorB logs | `/home/alex/geode_cluster_b/locatorB/locatorB.log` |
+| Geode serverB1 logs | `/home/alex/geode_cluster_b/serverB1/serverB1.log` |
+| JMX Exporter JAR | `/opt/jmx-exporter/jmx_prometheus_javaagent.jar` |
+| JMX Exporter config | `/opt/jmx-exporter/geode-jmx.yml` |
+
+### Warmachine — Alloy agent (systemd, not Docker)
+
+| Item | Path |
+| --- | --- |
+| Alloy config | `/etc/alloy/config.alloy` |
+| Geode serverB2 logs | `/home/alex/geode_cluster_b/serverB2/serverB2.log` |
+| JMX Exporter JAR | `/opt/jmx-exporter/jmx_prometheus_javaagent.jar` |
+| JMX Exporter config | `/opt/jmx-exporter/geode-jmx.yml` |
+
+### WSL2 Network Constraint
+
+Vision and Warmachine are WSL2 guests on Thor sharing IP `172.22.79.100`. BlackWidow (`192.168.0.153`) cannot initiate connections into that address. The data flow is therefore push-based:
+
+- Vision and Warmachine Alloy agents scrape their own JMX Exporter on `127.0.0.1`.
+- Both Alloy agents push metrics and logs outbound to `192.168.0.153` through Thor's WSL2 NAT — standard outbound WSL2 routing works without any portproxy rules.
+- This differs from Antman and Hulk, where BlackWidow's Alloy container pulls from their LAN IPs.
+
+Repo-side config files: `scripts/Vision/config.alloy` and `scripts/Warmachine/config.alloy`. Deploy to `/etc/alloy/config.alloy` on each host.
+
 ### Ironman — ActivityClientApp (Windows)
 
 | Item | Path |
@@ -230,6 +285,74 @@ docker compose restart alloy
 ```
 
 Alloy validates its config at startup and will not come up if the config has syntax errors. Check `docker compose logs alloy` if the container exits immediately after restart.
+
+### Vision — Alloy systemd (Ubuntu 24.04)
+
+Install Alloy from the Grafana APT repository:
+
+```bash
+sudo apt-get install -y gpg
+wget -q -O - https://apt.grafana.com/gpg.key | gpg --dearmor | sudo tee /etc/apt/keyrings/grafana.gpg > /dev/null
+echo "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://apt.grafana.com stable main" | \
+  sudo tee /etc/apt/sources.list.d/grafana.list
+sudo apt-get update && sudo apt-get install -y alloy
+```
+
+### Warmachine — Alloy systemd (RHEL 8)
+
+Install Alloy from the Grafana RPM repository:
+
+```bash
+cat <<'EOF' | sudo tee /etc/yum.repos.d/grafana.repo
+[grafana]
+name=grafana
+baseurl=https://rpm.grafana.com
+repo_gpgcheck=1
+enabled=1
+gpgcheck=1
+gpgkey=https://rpm.grafana.com/gpg.key
+sslverify=1
+sslcacert=/etc/pki/tls/certs/ca-bundle.crt
+EOF
+sudo dnf install -y alloy
+```
+
+### Deploy config and start Alloy (Vision and Warmachine)
+
+```bash
+# Deploy repo config to system path
+sudo cp ~/path/to/config.alloy /etc/alloy/config.alloy
+
+# Validate syntax before starting
+alloy fmt --write=false /etc/alloy/config.alloy
+
+# Enable and start
+sudo systemctl enable --now alloy
+sudo systemctl status alloy
+
+# Follow logs
+sudo journalctl -u alloy -f
+```
+
+### JMX Exporter prerequisites (Vision and Warmachine)
+
+Before running the updated start scripts, install the JMX Exporter JAR and config on each Cluster B host:
+
+```bash
+sudo mkdir -p /opt/jmx-exporter
+# Copy jmx_prometheus_javaagent.jar from the repo or download the same version used on Antman/Hulk
+# Copy geode-jmx.yml (minimal catch-all config — see Geode Metric Exposure section)
+sudo chmod 644 /opt/jmx-exporter/jmx_prometheus_javaagent.jar /opt/jmx-exporter/geode-jmx.yml
+```
+
+Verify outbound connectivity from Vision/Warmachine to BlackWidow before starting Alloy:
+
+```bash
+curl http://192.168.0.153:9009/ready    # Mimir
+curl http://192.168.0.153:3100/ready    # Loki
+```
+
+Expected: HTTP 200 response from each endpoint.
 
 ### Antman / Hulk — Alloy systemd
 
@@ -301,6 +424,28 @@ The Hulk start script launches `locator2` on port 9405 and `server2` on port 940
 ```bash
 --J=-javaagent:/opt/jmx-exporter/jmx_prometheus_javaagent.jar=9404:/opt/jmx-exporter/geode-jmx.yml
 ```
+
+### Vision
+
+The Vision start script launches `locatorB` on port 9405 and `serverB1` on port 9404:
+
+```bash
+--J=-javaagent:/opt/jmx-exporter/jmx_prometheus_javaagent.jar=9405:/opt/jmx-exporter/geode-jmx.yml
+```
+
+```bash
+--J=-javaagent:/opt/jmx-exporter/jmx_prometheus_javaagent.jar=9404:/opt/jmx-exporter/geode-jmx.yml
+```
+
+### Warmachine
+
+The Warmachine start script launches `serverB2` on port 9404:
+
+```bash
+--J=-javaagent:/opt/jmx-exporter/jmx_prometheus_javaagent.jar=9404:/opt/jmx-exporter/geode-jmx.yml
+```
+
+Note: Vision and Warmachine share `172.22.79.100` but the JMX Exporter ports are bound to `127.0.0.1` and scraped locally by each host's Alloy agent. There is no external port conflict.
 
 Minimal exporter config:
 
@@ -396,6 +541,70 @@ prometheus.scrape "geode_hulk_server2" {
 ```
 
 Node Exporter scraping is active on Antman and Hulk via the Alloy agents installed on those hosts. No additional scrape jobs are needed.
+
+### Vision and Warmachine Geode scrapes (push-based)
+
+Because BlackWidow cannot reach `172.22.79.100` directly, Vision and Warmachine each run their own Alloy agent that scrapes JMX locally and pushes to Mimir. The scrape blocks live in `scripts/Vision/config.alloy` and `scripts/Warmachine/config.alloy`.
+
+Vision — locatorB:
+
+```alloy
+prometheus.scrape "geode_vision_locatorb" {
+  targets = [
+    {
+      __address__ = "127.0.0.1:9405",
+      instance    = "vision",
+      job         = "geode",
+      app         = "apache-geode",
+      member      = "locatorB",
+      role        = "locator",
+    },
+  ]
+
+  scrape_interval = "15s"
+  forward_to      = [prometheus.remote_write.mimir.receiver]
+}
+```
+
+Vision — serverB1:
+
+```alloy
+prometheus.scrape "geode_vision_serverb1" {
+  targets = [
+    {
+      __address__ = "127.0.0.1:9404",
+      instance    = "vision",
+      job         = "geode",
+      app         = "apache-geode",
+      member      = "serverB1",
+      role        = "server",
+    },
+  ]
+
+  scrape_interval = "15s"
+  forward_to      = [prometheus.remote_write.mimir.receiver]
+}
+```
+
+Warmachine — serverB2:
+
+```alloy
+prometheus.scrape "geode_warmachine_serverb2" {
+  targets = [
+    {
+      __address__ = "127.0.0.1:9404",
+      instance    = "warmachine",
+      job         = "geode",
+      app         = "apache-geode",
+      member      = "serverB2",
+      role        = "server",
+    },
+  ]
+
+  scrape_interval = "15s"
+  forward_to      = [prometheus.remote_write.mimir.receiver]
+}
+```
 
 ## Mimir Configuration
 
@@ -664,6 +873,32 @@ gemfire_member_cpuusage{job="geode", instance=~"$instance", member=~"$member"}
 
 This is Geode's own per-member CPU measurement. For host-level CPU, Node Exporter on `:9100` is still required and not yet enabled.
 
+#### Gateway Receiver Health
+
+These panels become populated once Vision and Warmachine are added to the monitoring stack. Use `{__name__=~"gemfire_gatewayreceiver.*"}` in Grafana Explore to confirm the exact metric names after the first scrape.
+
+**Receiver Running** — stat panel, 1 = running, legend: `{{member}}`
+```promql
+gemfire_gatewayreceiver_running{job="geode", instance=~"$instance", member=~"$member"}
+```
+
+**Receiver Connections** — time series, unit: connections, legend: `{{member}}`
+```promql
+gemfire_gatewayreceiver_connectionsload{job="geode", instance=~"$instance", member=~"$member"}
+```
+
+**Receiver Events Received Rate** — time series, unit: events/sec, legend: `{{member}}`
+```promql
+gemfire_gatewayreceiver_eventsreceivedrate{job="geode", instance=~"$instance", member=~"$member"}
+```
+
+**Receiver Avg Batch Processing Time** — time series, unit: ms, legend: `{{member}}`
+```promql
+gemfire_gatewayreceiver_avgbatchprocessingtime{job="geode", instance=~"$instance", member=~"$member"}
+```
+
+Note: Exact metric names are confirmed from a live JMX endpoint. If any panel shows no data after Vision/Warmachine Alloy is running, run `{__name__=~"gemfire_gatewayreceiver.*"}` in Mimir Explore to discover the real names and update accordingly.
+
 ## Validation Workflow
 
 ### Network validation from BlackWidow
@@ -687,6 +922,33 @@ Expected result:
 - HTTP connectivity succeeds
 - Prometheus-format metrics are returned
 
+### Network validation for Cluster B (from Vision or Warmachine directly)
+
+Cluster B JMX Exporters are localhost-only and cannot be validated from BlackWidow. Validate from within each WSL2 host:
+
+```bash
+# On Vision
+curl http://127.0.0.1:9405/metrics    # locatorB
+curl http://127.0.0.1:9404/metrics    # serverB1
+
+# On Warmachine
+curl http://127.0.0.1:9404/metrics    # serverB2
+```
+
+Verify that Vision and Warmachine Alloy agents can reach BlackWidow:
+
+```bash
+curl http://192.168.0.153:9009/ready    # Mimir
+curl http://192.168.0.153:3100/ready    # Loki
+```
+
+After Alloy is running, confirm metrics arrived in Grafana Explore (Mimir data source):
+
+```promql
+up{job="geode", instance="vision"}
+up{job="geode", instance="warmachine"}
+```
+
 ### Grafana and Mimir validation
 
 Run these PromQL queries in Grafana Explore against Mimir:
@@ -706,7 +968,7 @@ scrape_duration_seconds{job="geode"}
 Expected result:
 
 - `up{job="geode"}` returns `1` for healthy targets
-- `count(up{job="geode"} == 1)` returns `4` when both locators and both servers are scraped
+- `count(up{job="geode"} == 1)` returns `4` for Cluster A only (locator1, server1, locator2, server2); returns `7` when all Cluster B members are also scraped (+ locatorB, serverB1, serverB2)
 - Series carry the expected labels such as `instance`, `job`, `app`, `member`, and `role`
 
 ### Metric discovery
@@ -734,9 +996,9 @@ Confirmed Geode log label set as of 2026-04-27 (from live Loki `/loki/api/v1/lab
 | `job` | `geode` |
 | `app` | `apache-geode` |
 | `cluster` | `production` |
-| `instance` | `antman`, `hulk` |
-| `host` | `antman`, `hulk` |
-| `member` | `locator1`, `server1`, `locator2`, `server2` |
+| `instance` | `antman`, `hulk`, `vision` (planned), `warmachine` (planned) |
+| `host` | `antman`, `hulk`, `vision` (planned), `warmachine` (planned) |
+| `member` | `locator1`, `server1`, `locator2`, `server2`, `locatorB` (planned), `serverB1` (planned), `serverB2` (planned) |
 | `log_type` | `locator`, `server` |
 | `filename` | full path to the log file, added automatically by Alloy |
 
@@ -863,12 +1125,23 @@ Grafana's **Derived Fields** feature can create clickable links from Loki log li
 4. Verify targets are up in Grafana or Alloy.
 5. Validate queries in Grafana Explore before building dashboards.
 
-### Geode nodes
+### Geode nodes (Cluster A — Antman and Hulk)
 
 1. Install the JMX Exporter JAR and config on each host.
 2. Add the Java agent argument to the Geode startup command.
 3. Restart the Geode member.
 4. Confirm the metrics endpoint responds on `:9404` for servers and `:9405` for locators.
+
+### Geode nodes (Cluster B — Vision and Warmachine)
+
+1. Install the JMX Exporter JAR and config at `/opt/jmx-exporter/` on Vision and Warmachine.
+2. Install Alloy via package manager (APT on Vision, DNF on Warmachine).
+3. Deploy `scripts/Vision/config.alloy` and `scripts/Warmachine/config.alloy` to `/etc/alloy/config.alloy` on each host.
+4. Enable and start Alloy: `sudo systemctl enable --now alloy`.
+5. Verify outbound connectivity: `curl http://192.168.0.153:9009/ready` from each host.
+6. Start Cluster B using the updated start scripts (JMX Exporter args are now included).
+7. Confirm JMX endpoints respond locally: `curl http://127.0.0.1:9404/metrics` and `curl http://127.0.0.1:9405/metrics` (Vision only for 9405).
+8. Validate in Grafana Explore: `up{job="geode", instance="vision"}` and `up{job="geode", instance="warmachine"}` return `1`.
 
 ## Known Issues
 
@@ -903,6 +1176,18 @@ Alloy agents on Antman and Hulk tail the following log files and forward to Loki
 | Hulk | server2 | `/home/alex/geode_cluster/server2/server2.log` |
 
 Config location on each host: `/etc/alloy/config.alloy` under the `loki.source.file "geode"` component.
+
+### Add Cluster B logs — planned
+
+Alloy agents on Vision and Warmachine will tail the following log files and forward to Loki on BlackWidow:
+
+| Host | Member | Log path |
+| --- | --- | --- |
+| Vision | locatorB | `/home/alex/geode_cluster_b/locatorB/locatorB.log` |
+| Vision | serverB1 | `/home/alex/geode_cluster_b/serverB1/serverB1.log` |
+| Warmachine | serverB2 | `/home/alex/geode_cluster_b/serverB2/serverB2.log` |
+
+Config location on each host: `/etc/alloy/config.alloy` under the `loki.source.file "geode"` component. See `scripts/Vision/config.alloy` and `scripts/Warmachine/config.alloy`.
 
 ### Add tracing — complete
 

@@ -19,14 +19,15 @@ This document is the single source of truth for the Geode lab. It covers host to
 | Antman | 192.168.0.150 | Rocky Linux 8 | Cluster A locator1 and server1 | Active |
 | Hulk | 192.168.0.151 | RHEL 8 | Cluster A server2 and optional locator2 | Active for server2, optional for locator2 |
 | BlackWidow | 192.168.0.153 | Ubuntu 24.04 | Monitoring hub for LGTM, scrapes Geode metrics | Active |
-| Thor | 192.168.0.14 | Windows 11 | WSL2 host and `portproxy` entry point into Vision | Active |
+| Thor | 192.168.0.14 | Windows 11 | WSL2 host and `portproxy` entry point into Cluster B | Active |
 | Vision | 172.22.79.100 | Ubuntu 24.04 | Cluster B locatorB, serverB1, GatewayReceiver | Active |
-| Warmachine | 172.22.79.100 | RHEL 8 | Future Cluster B member in the same WSL2 or NAT domain | Planned |
+| Warmachine | 172.22.79.100 | RHEL 8 | Cluster B serverB2 | Active |
 
 Notes:
 
 - Vision is behind WSL2 NAT, so Cluster A reaches the GatewayReceiver through Thor.
-- Warmachine is not part of the currently validated WAN data path.
+- Warmachine and Vision share the same WSL2 virtual network adapter on Thor and both bind to `172.22.79.100`. They must use distinct ports for all Geode members.
+- Warmachine runs no locator and no GatewayReceiver. It joins Cluster B by connecting to Vision's locatorB at `172.22.79.100[20334]`.
 
 ## Topology
 
@@ -74,13 +75,15 @@ Antman -> senderA -> Thor 192.168.0.14:5000 -> Vision 172.22.79.100:5000 -> Gate
                                     |
                locators=172.22.79.100[20334]
                                     |
-                    +---------------v---------------+
-                    | serverB1                      |
-                    | Host: Vision                  |
-                    | IP: 172.22.79.100            |
-                    | Cache Server: 40405/tcp      |
-                    | GatewayReceiver: 5000/tcp    |
-                    +-------------------------------+
+             +----------------------+----------------------+
+             |                                             |
+ +-----------v-----------+                     +-----------v-----------+
+ | serverB1               |                    | serverB2              |
+ | Host: Vision           |                    | Host: Warmachine      |
+ | IP: 172.22.79.100      |                    | IP: 172.22.79.100     |
+ | Cache Server: 40405/tcp|                    | Cache Server: 40406/tcp|
+ | GatewayReceiver: 5000  |                    | (shared WSL2 adapter) |
+ +-----------------------+                     +-----------------------+
 ```
 
 ## Port Matrix
@@ -104,9 +107,14 @@ Antman -> senderA -> Thor 192.168.0.14:5000 -> Vision 172.22.79.100:5000 -> Gate
 | Vision | 20334 | locatorB | Cluster B locator |
 | Vision | 40405 | serverB1 | Cache server |
 | Vision | 5000 | GatewayReceiver | WAN receiver internal listen port |
-| Thor | 5000 | portproxy | External entry point forwarded to Vision |
+| Vision | 9405 | locatorB JMX Exporter | Metrics endpoint (localhost only, scraped by local Alloy agent) |
+| Vision | 9404 | serverB1 JMX Exporter | Metrics endpoint (localhost only, scraped by local Alloy agent) |
+| Warmachine | 40406 | serverB2 | Cache server (distinct port — shares 172.22.79.100 with Vision) |
+| Warmachine | 9404 | serverB2 JMX Exporter | Metrics endpoint (localhost only, scraped by local Alloy agent) |
+| Thor | 5000 | portproxy | GatewayReceiver forwarded to Vision |
 | Thor | 20334 | portproxy | Cluster B locator forwarded to Vision |
-| Thor | 40405 | portproxy | Cluster B cache server forwarded to Vision |
+| Thor | 40405 | portproxy | serverB1 forwarded to Vision |
+| Thor | 40406 | portproxy | serverB2 forwarded to Warmachine |
 | BlackWidow | 3000 | Grafana | Monitoring UI |
 | BlackWidow | 3100 | Loki | Logs |
 | BlackWidow | 3200 | Tempo | Traces |
@@ -116,7 +124,7 @@ Antman -> senderA -> Thor 192.168.0.14:5000 -> Vision 172.22.79.100:5000 -> Gate
 
 ### Geode hosts
 
-Apply this baseline on Antman, Hulk, and Vision:
+Apply this baseline on Antman, Hulk, Vision, and Warmachine:
 
 - Java 11 is required.
 - Apache Geode 1.15.2 must be installed locally.
@@ -147,6 +155,34 @@ Expected defaults in `scripts/Vision/start_geode.sh`:
 - `GEODE_HOME=/home/alex/geode`
 - `CLUSTER_DIR=/home/alex/geode_cluster_b`
 
+### Warmachine
+
+Warmachine is RHEL 8, the same OS family as Hulk. Install Java 11 with `dnf`:
+
+```bash
+sudo dnf install -y java-11-openjdk-devel
+```
+
+Verify the installed path and set `JAVA_HOME` to match:
+
+```bash
+ls /usr/lib/jvm/ | grep java-11-openjdk
+```
+
+Expected output example (exact version string varies by RHEL 8 minor release):
+
+```
+java-11-openjdk-11.0.25.0.9-2.el8.x86_64
+```
+
+Expected defaults for `scripts/Warmachine/start_geode.sh`:
+
+- `JAVA_HOME=/usr/lib/jvm/java-11-openjdk-11.0.25.0.9-2.el8.x86_64`
+- `GEODE_HOME=/home/alex/geode`
+- `CLUSTER_DIR=/home/alex/geode_cluster_b`
+
+Note: Warmachine and Vision share the WSL2 virtual network adapter on Thor and both resolve to `172.22.79.100`. Warmachine's server (`serverB2`) must use a different port than Vision's `serverB1` (port `40405`). Use port `40406` for `serverB2`.
+
 ### Client workstation on Ironman
 
 The Java client only needs the Geode product libraries and a Java 11 JDK. It does not need to host a local Geode server.
@@ -172,6 +208,7 @@ Validated member directories:
 | Hulk | server2 | /home/alex/geode_cluster/server2 |
 | Vision | locatorB | /home/alex/geode_cluster_b/locatorB |
 | Vision | serverB1 | /home/alex/geode_cluster_b/serverB1 |
+| Warmachine | serverB2 | /home/alex/geode_cluster_b/serverB2 |
 
 Important rule:
 
@@ -200,13 +237,14 @@ Apply the reciprocal rule on Hulk for Antman traffic.
 
 ### Thor portproxy rules
 
-Thor forwards specific ports from its physical Wi-Fi IP (`192.168.0.14`) to Vision's WSL2 IP (`172.22.79.100`). These rules must be present for Cluster A to reach Cluster B.
+Thor forwards specific ports from its physical Wi-Fi IP (`192.168.0.14`) into the WSL2 network (`172.22.79.100`). Vision and Warmachine share that IP but use distinct ports. These rules must be present for Cluster A and external clients to reach Cluster B.
 
-| External (Thor) | Internal (Vision) | Purpose |
+| External (Thor) | Internal (WSL2) | Purpose |
 | --- | --- | --- |
-| 192.168.0.14:5000 | 172.22.79.100:5000 | GatewayReceiver |
-| 192.168.0.14:20334 | 172.22.79.100:20334 | Cluster B locator |
-| 192.168.0.14:40405 | 172.22.79.100:40405 | Cluster B cache server |
+| 192.168.0.14:5000 | 172.22.79.100:5000 | GatewayReceiver (Vision/serverB1) |
+| 192.168.0.14:20334 | 172.22.79.100:20334 | Cluster B locator (Vision/locatorB) |
+| 192.168.0.14:40405 | 172.22.79.100:40405 | serverB1 (Vision) |
+| 192.168.0.14:40406 | 172.22.79.100:40406 | serverB2 (Warmachine) |
 
 Verify rules on Thor:
 
@@ -218,6 +256,7 @@ Add a missing rule (run elevated on Thor):
 
 ```powershell
 netsh interface portproxy add v4tov4 listenaddress=192.168.0.14 listenport=5000 connectaddress=172.22.79.100 connectport=5000
+netsh interface portproxy add v4tov4 listenaddress=192.168.0.14 listenport=40406 connectaddress=172.22.79.100 connectport=40406
 ```
 
 See the [Thor Portproxy Maintenance](#thor-portproxy-maintenance) section if rules exist but connections are still refused.
@@ -293,6 +332,24 @@ It also sets:
 
 1. `serverB1`
 2. `locatorB`
+
+### Start Warmachine
+
+`scripts/Warmachine/start_geode.sh` starts:
+
+1. `serverB2` on `172.22.79.100:40406`
+
+It connects to Vision's `locatorB` at `172.22.79.100[20334]` before starting the server. It requires Vision's Cluster B to already be running. It also sets:
+
+- server group `wan-receiver`
+- hostname-for-clients `192.168.0.14`
+- properties file `~/geode_cluster_b/serverB2/gemfire.properties`
+
+### Stop Warmachine
+
+`scripts/Warmachine/stop_geode.sh` stops:
+
+1. `serverB2`
 
 ## Gateway Configuration
 
