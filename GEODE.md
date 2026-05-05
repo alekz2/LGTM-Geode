@@ -57,11 +57,14 @@ Notes:
  +-----------------------+                     +-----------------------+
 ```
 
-### WAN Path from Cluster A to Cluster B
+### WAN Paths (Bidirectional)
 
 ```text
-Antman -> senderA -> Thor 192.168.0.14:5000 -> Vision 172.22.79.100:5000 -> GatewayReceiver
+A → B:  Antman(senderA) -> Thor 192.168.0.14:5000 -> Vision 172.22.79.100:5000/5001 -> GatewayReceiver
+B → A:  Vision/Warmachine(senderB) -> Antman 192.168.0.150:6000 -> GatewayReceiver
 ```
+
+Note: B→A traffic goes directly from Vision to Antman (both on `192.168.0.x` subnet). No portproxy is needed for this direction.
 
 ### Cluster B
 
@@ -82,7 +85,8 @@ Antman -> senderA -> Thor 192.168.0.14:5000 -> Vision 172.22.79.100:5000 -> Gate
  | Host: Vision           |                    | Host: Warmachine      |
  | IP: 172.22.79.100      |                    | IP: 172.22.79.100     |
  | Cache Server: 40405/tcp|                    | Cache Server: 40406/tcp|
- | GatewayReceiver: 5000  |                    | (shared WSL2 adapter) |
+ | GatewayReceiver: 5001  |                    | GatewayReceiver: 5000 |
+ | (A→B receiver)         |                    | (A→B receiver)        |
  +-----------------------+                     +-----------------------+
 ```
 
@@ -106,12 +110,14 @@ Antman -> senderA -> Thor 192.168.0.14:5000 -> Vision 172.22.79.100:5000 -> Gate
 | Hulk | 9404 | server2 JMX Exporter | Metrics endpoint |
 | Vision | 20334 | locatorB | Cluster B locator |
 | Vision | 40405 | serverB1 | Cache server |
-| Vision | 5000 | GatewayReceiver | WAN receiver internal listen port |
+| Vision | 5001 | serverB1 GatewayReceiver | WAN A→B receiver (dynamic from range 5000-5001) |
 | Vision | 9405 | locatorB JMX Exporter | Metrics endpoint (localhost only, scraped by local Alloy agent) |
 | Vision | 9404 | serverB1 JMX Exporter | Metrics endpoint (localhost only, scraped by local Alloy agent) |
 | Warmachine | 40406 | serverB2 | Cache server (distinct port — shares 172.22.79.100 with Vision) |
-| Warmachine | 9404 | serverB2 JMX Exporter | Metrics endpoint (localhost only, scraped by local Alloy agent) |
-| Thor | 5000 | portproxy | GatewayReceiver forwarded to Vision |
+| Warmachine | 5000 | serverB2 GatewayReceiver | WAN A→B receiver (dynamic from range 5000-5001) |
+| Warmachine | 9406 | serverB2 JMX Exporter | Metrics endpoint — must use 9406 (9404 conflicts with serverB1) |
+| Antman | 6000 | server1 GatewayReceiver | WAN B→A receiver — requires `firewall-cmd --add-port=6000/tcp` on Antman |
+| Thor | 5000 | portproxy | A→B GatewayReceiver forwarded to Vision (port range 5000-5001) |
 | Thor | 20334 | portproxy | Cluster B locator forwarded to Vision |
 | Thor | 40405 | portproxy | serverB1 forwarded to Vision |
 | Thor | 40406 | portproxy | serverB2 forwarded to Warmachine |
@@ -241,7 +247,8 @@ Thor forwards specific ports from its physical Wi-Fi IP (`192.168.0.14`) into th
 
 | External (Thor) | Internal (WSL2) | Purpose |
 | --- | --- | --- |
-| 192.168.0.14:5000 | 172.22.79.100:5000 | GatewayReceiver (Vision/serverB1) |
+| 192.168.0.14:5000 | 172.22.79.100:5000 | GatewayReceiver (Warmachine/serverB2) |
+| 192.168.0.14:5001 | 172.22.79.100:5001 | GatewayReceiver (Vision/serverB1) |
 | 192.168.0.14:20334 | 172.22.79.100:20334 | Cluster B locator (Vision/locatorB) |
 | 192.168.0.14:40405 | 172.22.79.100:40405 | serverB1 (Vision) |
 | 192.168.0.14:40406 | 172.22.79.100:40406 | serverB2 (Warmachine) |
@@ -256,6 +263,7 @@ Add a missing rule (run elevated on Thor):
 
 ```powershell
 netsh interface portproxy add v4tov4 listenaddress=192.168.0.14 listenport=5000 connectaddress=172.22.79.100 connectport=5000
+netsh interface portproxy add v4tov4 listenaddress=192.168.0.14 listenport=5001 connectaddress=172.22.79.100 connectport=5001
 netsh interface portproxy add v4tov4 listenaddress=192.168.0.14 listenport=40406 connectaddress=172.22.79.100 connectport=40406
 ```
 
@@ -324,7 +332,10 @@ It also sets:
 
 - distributed system ID `2`
 - locator advertised hostname-for-clients `192.168.0.14`
+- `remote-locators=192.168.0.150[10334],192.168.0.151[10334]` — required for `senderB` to discover Cluster A's gateway receiver
 - server group `wan-receiver`
+
+**Key note — bind address and hostname resolution**: The locator starts with `--bind-address=172.22.79.100`. This works correctly only because Vision's `/etc/hosts` maps `Vision` → `172.22.79.100`, which causes `InetAddress.getLocalHost()` to return `172.22.79.100` at JVM startup. Without that `/etc/hosts` entry, Geode's `SocketCreator.getLocalHost()` scans network interfaces, finds WSL2's `10.255.255.254` NAT loopback proxy on the `lo` interface (which is not in the 127.0.0.0/8 range so `isLoopbackAddress()` returns false), and caches it as the locator's member address before any config is applied. Members then try to contact the locator at `10.255.255.254:20334`, which is refused. See [senderB Running, not Connected](#senderb-running-not-connected--locator-advertises-10255255254) for the full root cause and the one-time `/etc/hosts` setup required on Vision.
 
 ### Stop Vision
 
@@ -353,7 +364,7 @@ It connects to Vision's `locatorB` at `172.22.79.100[20334]` before starting the
 
 ## Gateway Configuration
 
-### Cluster A sender
+### Cluster A sender (A→B)
 
 `scripts/Antman/create_gateway_sender.sh` creates or reuses:
 
@@ -377,95 +388,183 @@ distributed-system-id=1
 remote-locators=192.168.0.14[20334]
 ```
 
-### Cluster B receiver
+### Cluster A receiver (B→A)
+
+`scripts/Antman/create_gateway_receiver.sh` creates:
+
+- group: `wan-sender`
+- start port: `6000`
+- end port: `6000`
+- hostname-for-senders: `192.168.0.150`
+- `manual-start=false`
+- `if-not-exists=true`
+
+Only `server1` on Antman is in the `wan-sender` group, so only one receiver is created (port `6000`). Vision's `senderB` connects directly to `192.168.0.150:6000` — no portproxy is needed for this direction.
+
+`--bind-address` is intentionally omitted for the same reason as the Cluster B receiver (Geode 1.15.2 NPE in `removeInvalidGatewayReceivers`).
+
+**Firewall prerequisite on Antman (Rocky Linux 8 — one-time)**:
+
+```bash
+sudo firewall-cmd --permanent --add-port=6000/tcp
+sudo firewall-cmd --reload
+```
+
+### Cluster B receiver (A→B)
 
 `scripts/Vision/create_gateway_receiver.sh` creates:
 
 - group: `wan-receiver`
 - start port: `5000`
-- end port: `5000`
+- end port: `5001`
 - hostname-for-senders: `192.168.0.14`
 - `manual-start=false`
 - `if-not-exists=true`
 
-Both start and end port are fixed at `5000` so the receiver always binds to the same port. This matches the Thor portproxy rule and avoids the need to update portproxy rules after each restart.
+The port **range** `5000-5001` is required because both `serverB1` (Vision) and `serverB2` (Warmachine) are in the `wan-receiver` group and share IP `172.22.79.100`. Each server picks a distinct port from the range: `serverB1` binds to `5001`, `serverB2` binds to `5000`. The Thor portproxy rule forwards `192.168.0.14:5000` to `172.22.79.100:5000`; a second rule forwards `192.168.0.14:5001` to `172.22.79.100:5001`.
 
 `--bind-address` is intentionally omitted. When a specific WSL2 IP such as `172.22.79.100` is persisted into the cluster configuration XML, Geode 1.15.2 considers that element invalid on the next locator restart and crashes with a `NullPointerException` in `removeInvalidGatewayReceivers` before startup completes. Omitting `--bind-address` causes the receiver to bind to all local interfaces, which is safe because external access is gated by Thor's portproxy. `--hostname-for-senders` still ensures Cluster A senders connect through Thor.
 
-## Region Wiring
+**Auto-restore note**: Geode 1.15.2 restores GatewaySenders from cluster config automatically on server restart, but GatewayReceivers are always absent after a locator restart. The root cause is confirmed in the locatorB log: the cluster config service calls `removeInvalidGatewayReceivers` during its own startup sequence, before any server members have rejoined. At that instant there are no running members backing the receiver, so every persisted gateway receiver element is considered "invalid" and deleted from the cluster config. By the time servers rejoin seconds later, the receiver config is already gone. GatewaySenders have no equivalent cleanup pass and survive restarts unaffected. Both `scripts/Vision/start_geode.sh` and `scripts/Antman/start_geode.sh` call their respective `create_gateway_receiver.sh` at the end of startup to recreate the receiver after this deletion.
 
-Current validated region design:
+### Cluster B sender (B→A)
 
-- Cluster A region `Activity`
-  - `data-policy = REPLICATE`
-  - `gateway-sender-id = senderA`
-- Cluster B region `Activity`
-  - `data-policy = REPLICATE_PERSISTENT` (gfsh type: `REPLICATE_PERSISTENT`)
-  - no sender attached
+`scripts/Vision/create_gateway_sender.sh` creates or reuses:
 
-Direction rule:
+- GatewaySender ID: `senderB`
+- group: `wan-receiver`
+- remote distributed system ID: `1`
+- `parallel=false`
+- `manual-start=false`
 
-- Cluster A is the source side.
-- Cluster B is the target side.
+The `wan-receiver` group is used (not `wan-sender`) because both serverB1 and serverB2 are `wan-receiver` members and must carry the sender for the `/Activity` region that they host.
 
-Create command for Cluster B if the region is missing:
+The script is idempotent. It checks `list gateways | grep senderB` before creating.
+
+### Wiring senderA to /Activity on Cluster A (A→B)
+
+`scripts/Antman/alter_region_activity.sh` runs:
 
 ```bash
+alter region --name=/Activity --gateway-sender-id=senderA
+```
+
+**Prerequisite**: The `/Activity` region must be registered in the Cluster A cluster configuration XML (i.e., it was created via gfsh `create region`, not just recovered from a disk persistence store). If `alter region` fails with "does not exist in group cluster", destroy and recreate the region via gfsh — see [Region not in cluster config](#region-not-in-cluster-config).
+
+### Wiring senderB to /Activity on Cluster B (B→A)
+
+`scripts/Vision/alter_region_activity.sh` runs:
+
+```bash
+alter region --name=/Activity --gateway-sender-id=senderB
+```
+
+Same prerequisite as above: region must be in the cluster config XML on Cluster B.
+
+### Coordinated region destroy
+
+`scripts/shared/destroy_region_activity.sh` destroys `/Activity` on both clusters in order:
+
+1. Cluster B first — stops new WAN events before touching Cluster A.
+2. Cluster A second.
+
+The script uses separate `gfsh` sessions for each cluster. Each destroy is non-fatal (the script continues with a warning if the region did not exist). Both `GFSH_A` and `GFSH_B` paths are configurable; override if the binary for one cluster is not accessible from the host running the script.
+
+**Note**: WAN replication only propagates entry-level events (`put`, `destroy`, `invalidate`). A `destroy region` command is a cluster-level operation and is NOT forwarded over WAN. Always use this coordinated script (or manual gfsh commands on both clusters) when removing a replicated region.
+
+## Region Wiring
+
+Current validated region design (bidirectional):
+
+- Cluster A region `/Activity`
+  - `data-policy = REPLICATE`
+  - `gateway-sender-id = senderA` (sends A→B)
+- Cluster B region `/Activity`
+  - `data-policy = REPLICATE_PERSISTENT` (gfsh type: `REPLICATE_PERSISTENT`)
+  - `gateway-sender-id = senderB` (sends B→A)
+
+WAN loop prevention: Geode's built-in DS ID filtering prevents infinite loops. An event originating from DS ID 1 arriving at Cluster B is not re-forwarded by `senderB` back to DS ID 1, and vice versa. No additional configuration is required.
+
+**Important**: `alter region --gateway-sender-id` only works when the region is registered in the cluster configuration XML (i.e., created via gfsh `create region`, not recovered from a disk persistence store). If the region was auto-recovered from disk on startup, `alter region` will fail with "does not exist in group cluster". The fix is to destroy and recreate the region via gfsh — see [Region not in cluster config](#region-not-in-cluster-config).
+
+Create commands if either region is missing:
+
+```bash
+# Cluster A
+gfsh -e "connect --locator=192.168.0.150[10334]" \
+  -e "create region --name=/Activity --type=REPLICATE --gateway-sender-id=senderA"
+
+# Cluster B
 gfsh -e "connect --locator=172.22.79.100[20334]" \
-  -e "create region --name=Activity --type=REPLICATE_PERSISTENT --group=wan-receiver"
+  -e "create region --name=/Activity --type=REPLICATE_PERSISTENT --gateway-sender-id=senderB"
 ```
 
 ## Recommended Execution Order
 
-### Initial bootstrap
+### Full bidirectional bootstrap (one-time setup)
 
-1. Start Cluster B on Vision.
-2. Create the GatewayReceiver on Vision.
-3. Create the `Activity` region on Cluster B.
-4. Start Cluster A on Antman.
-5. Create the GatewaySender on Antman.
-6. Validate members, gateways, and region wiring.
-7. Run an end-to-end put on Cluster A and get on Cluster B.
+This sequence is required on initial setup or after a full cluster wipe. A full restart is needed because `remote-locators` on Vision's locator is a JVM startup property.
 
-### Commands
+```
+1.  ANTMAN:      sudo firewall-cmd --permanent --add-port=6000/tcp && sudo firewall-cmd --reload
+2.  WARMACHINE:  ./scripts/Warmachine/stop_geode.sh
+3.  VISION:      ./scripts/Vision/stop_geode.sh
+4.  HULK:        ./scripts/Hulk/stop_geode.sh         (if locator2 is running)
+5.  ANTMAN:      ./scripts/Antman/stop_geode.sh
+6.  LOCAL:       Verify scripts/Vision/start_geode.sh has REMOTE_LOCATORS and --bind-address=172.22.79.100 on locator
+7.  VISION:      ./scripts/Vision/start_geode.sh
+8.  WARMACHINE:  ./scripts/Warmachine/start_geode.sh
+9.  VISION:      ./scripts/Vision/create_gateway_receiver.sh
+10. VISION:      ./scripts/Vision/create_gateway_sender.sh
+11. ANTMAN:      ./scripts/Antman/start_geode.sh
+12. HULK:        ./scripts/Hulk/start_geode.sh         (if locator2 is needed)
+13. ANTMAN:      ./scripts/Antman/create_gateway_receiver.sh
+14. ANTMAN:      ./scripts/Antman/create_gateway_sender.sh
+15. ANTMAN:      ./scripts/Antman/alter_region_activity.sh
+16. VISION:      ./scripts/Vision/alter_region_activity.sh
+```
 
-Vision:
+Steps 15 and 16 (`alter region`) only succeed if the `/Activity` region is already registered in each cluster's config XML. If the region needs to be created first:
 
 ```bash
-./scripts/Vision/start_geode.sh
-./scripts/Vision/create_gateway_receiver.sh
+# Cluster A (Antman)
+gfsh -e "connect --locator=192.168.0.150[10334]" \
+  -e "create region --name=/Activity --type=REPLICATE --gateway-sender-id=senderA"
+
+# Cluster B (Vision)
 gfsh -e "connect --locator=172.22.79.100[20334]" \
-  -e "create region --name=Activity --type=REPLICATE_PERSISTENT --group=wan-receiver"
+  -e "create region --name=/Activity --type=REPLICATE_PERSISTENT --gateway-sender-id=senderB"
 ```
 
-Antman:
+In that case, skip steps 15 and 16 — the sender is wired at `create region` time.
 
-```bash
-./scripts/Antman/start_geode.sh
-./scripts/Antman/create_gateway_sender.sh
+### Normal restart (cluster config intact)
+
+On normal restarts where both clusters have their configuration disk stores intact:
+
+```
+1. ANTMAN:      ./scripts/Antman/stop_geode.sh
+2. VISION:      ./scripts/Vision/stop_geode.sh
+3. WARMACHINE:  ./scripts/Warmachine/stop_geode.sh
+4. VISION:      ./scripts/Vision/start_geode.sh
+5. WARMACHINE:  ./scripts/Warmachine/start_geode.sh
+6. ANTMAN:      ./scripts/Antman/start_geode.sh
+7. HULK:        ./scripts/Hulk/start_geode.sh                 (if locator2 is needed)
 ```
 
-Notes:
-
-- Always run the create scripts after clearing the cluster configuration disk store — gateway and region configs are not automatically restored on restart.
-- On normal restarts where the disk store is intact, start scripts alone are sufficient.
+`start_geode.sh` on Vision automatically calls `create_gateway_receiver.sh` and `create_gateway_sender.sh` at the end of startup. No manual gateway steps are needed on normal restarts.
 
 ### Shutdown order
 
 Stop Cluster A before Cluster B so the sender drains and disconnects cleanly before the receiver goes away.
 
-1. Stop Cluster A on Antman.
-2. Stop Cluster B on Vision.
-
-Antman:
-
 ```bash
+# Cluster A
+./scripts/Hulk/stop_geode.sh      # if server2/locator2 is running
 ./scripts/Antman/stop_geode.sh
-```
 
-Vision:
-
-```bash
+# Cluster B
+./scripts/Warmachine/stop_geode.sh
 ./scripts/Vision/stop_geode.sh
 ```
 
@@ -497,24 +596,51 @@ Expected: `Connected to 192.168.0.14:5000`
 
 If this fails, see [Thor Portproxy Maintenance](#thor-portproxy-maintenance).
 
-### End-to-end replication test
+### End-to-end replication test (A→B)
 
 On Antman:
 
 ```bash
-gfsh -e "connect --locator=192.168.0.150[10334]" -e "put --region=Activity --key=E2E001 --value=wan_test"
+gfsh -e "connect --locator=192.168.0.150[10334]" -e "put --region=/Activity --key=E2E-A-001 --value=from_cluster_a"
 ```
 
 On Vision:
 
 ```bash
-gfsh -e "connect --locator=172.22.79.100[20334]" -e "get --region=Activity --key=E2E001"
+gfsh -e "connect --locator=172.22.79.100[20334]" -e "get --region=/Activity --key=E2E-A-001"
 ```
 
-Expected result:
+Expected: Cluster B returns `from_cluster_a`. `senderA` shows `Running and Connected`.
 
-- Cluster B returns the value written on Cluster A.
-- `senderA` remains `Running and Connected`.
+### End-to-end replication test (B→A)
+
+On Vision:
+
+```bash
+gfsh -e "connect --locator=172.22.79.100[20334]" -e "put --region=/Activity --key=E2E-B-001 --value=from_cluster_b"
+```
+
+On Antman:
+
+```bash
+gfsh -e "connect --locator=192.168.0.150[10334]" -e "get --region=/Activity --key=E2E-B-001"
+```
+
+Expected: Cluster A returns `from_cluster_b`. `senderB` shows `Running and Connected`.
+
+### Confirm both senders are connected
+
+```bash
+# Cluster A — senderA should be "Running and Connected"
+gfsh -e "connect --locator=192.168.0.150[10334]" -e "list gateways"
+
+# Cluster B — senderB should be "Running and Connected"
+gfsh -e "connect --locator=172.22.79.100[20334]" -e "list gateways"
+```
+
+If a sender shows `Running, not Connected`:
+- **senderA**: check Thor portproxy (port 5000/5001) and Vision's GatewayReceiver status
+- **senderB**: check Antman firewall (port 6000) and that Vision's locator started with `--bind-address=172.22.79.100`
 
 ## REST and Query Notes
 
@@ -854,6 +980,125 @@ Then retest from Antman:
 ```bash
 nc -zv 192.168.0.14 5000
 ```
+
+### senderB Running, not Connected — locator advertises 10.255.255.254
+
+Observed failure:
+
+- `list gateways` on Vision shows `senderB` status `Running, not Connected`
+- `serverB1.log`: `GatewaySender senderB is not able to connect to local locator 10.255.255.254:172.22.79.100[20334] : java.net.ConnectException: Connection refused`
+- `serverB1.log`: `GatewaySender senderB could not get remote locator information for remote site 1.`
+
+Root cause:
+
+WSL2 assigns `10.255.255.254/32` as a NAT loopback proxy alias on Vision's `lo` interface. Java's `InetAddress.isLoopbackAddress()` returns **false** for this address (it is not in the 127.0.0.0/8 range), so Geode's `SocketCreator.getLocalHost()` picks `10.255.255.254` as Vision's local host during locatorB initialization — before the JVM's bind-address configuration is applied. This address is persisted into `DistributionLocatorId.host`, which is what cluster members (including `senderB`) use to contact the locator. The locator itself listens on `172.22.79.100:20334` (gfsh always resolves to `eth0`), so a connection attempt to `10.255.255.254:20334` is refused.
+
+Removing `--bind-address` from the gfsh command does not fix this: gfsh silently sets `bind-address=172.22.79.100` via its API regardless, and `10.255.255.254` is still picked during early JVM initialization.
+
+Additional confirmed dead-ends (tried, do not retry):
+
+- Removing `--bind-address` from the gfsh locator command → gfsh silently sets `bind-address=172.22.79.100` via its API regardless; no change.
+- Adding `--bind-address=172.22.79.100` to the gfsh locator command → gfsh does NOT translate `--bind-address` into a `-Dgemfire.bind-address` JVM property for the locator JVM; `SocketCreator` still runs before any config is read.
+- Adding `--J=-Dgemfire.bind-address=172.22.79.100` to the server start → verified in JVM args, yet the server member address is still `10.255.255.254`. Confirmed that `gemfire.bind-address` system property does NOT affect `SocketCreator.getLocalHost()` in Geode 1.15.2.
+
+Fix:
+
+Change Vision's hostname to resolve to `172.22.79.100` in `/etc/hosts`. When `InetAddress.getLocalHost()` returns a non-loopback address, Geode uses it immediately without scanning interfaces. This eliminates the race where `10.255.255.254` is found first.
+
+**One-time setup on Vision** (run once, persists across Geode restarts):
+
+```bash
+# Prevent WSL2 from regenerating /etc/hosts on next distro start
+echo -e "[network]\ngenerateHosts = false" | sudo tee -a /etc/wsl.conf
+
+# Replace Vision's loopback hostname entry with the eth0 IP
+sudo sed -i '/\bVision\b/d' /etc/hosts
+echo "172.22.79.100 Vision" | sudo tee -a /etc/hosts
+
+# Verify
+getent hosts Vision   # must return: 172.22.79.100  Vision
+```
+
+Then restart Cluster B:
+
+```bash
+./scripts/Warmachine/stop_geode.sh
+./scripts/Vision/stop_geode.sh
+./scripts/Vision/start_geode.sh
+./scripts/Warmachine/start_geode.sh
+```
+
+Startup confirms the fix is active if the locator reports `172.22.79.100[20334]` and JMX Manager shows `host=172.22.79.100`, and the server JVM arg shows `-Dgemfire.default.locators=172.22.79.100[20334]` (no `10.255.255.254` prefix).
+
+After restart, `senderB` will show `Running and Connected` once it dispatches its first event to Cluster A. If the queue is empty at startup, the sender is idle until the first `put` to `/Activity` on Cluster B triggers the connection.
+
+### GatewayReceiver absent after cluster restart
+
+Observed failure:
+
+- After restarting a cluster, `list gateways` shows the GatewayReceiver section absent
+- The remote cluster's sender drops to `Running, not Connected`
+
+Root cause — confirmed from `locatorB.log`:
+
+On every locator restart, the cluster configuration service calls `removeInvalidGatewayReceivers` during its own startup sequence. This runs before any server members have rejoined. With no running members at that moment, every persisted gateway receiver element is considered "invalid" and is deleted from the cluster config disk store. The locator log records this explicitly:
+
+```
+Removed invalid cluster configuration gateway-receiver element=
+  <gateway-receiver end-port="5001" hostname-for-senders="192.168.0.14"
+   manual-start="false" start-port="5000" .../>
+Cluster configuration service start up completed successfully and is now running ....
+```
+
+The removal line appears 18 ms before the "startup completed" line — the deletion is baked into the startup path. When servers rejoin shortly after, the receiver element is already gone from the cluster config, so they join with no gateway receiver.
+
+GatewaySenders have no equivalent `removeInvalid` pass and survive restarts cleanly from cluster config.
+
+This is a Geode 1.15.2 behavior in `removeInvalidGatewayReceivers` (originally introduced in GEODE-5502). The same method also triggered the NPE crash when `--bind-address` was persisted; that crash is resolved by omitting `--bind-address`, but the deletion of the gateway receiver element from the cluster config still occurs on every restart regardless.
+
+Fix:
+
+Both `scripts/Vision/start_geode.sh` and `scripts/Antman/start_geode.sh` call their respective `create_gateway_receiver.sh` at the end of startup, so receivers are always recreated on start. If a receiver is still missing after a normal start (e.g., the create script failed silently), re-run manually:
+
+```bash
+# Cluster B
+./scripts/Vision/create_gateway_receiver.sh
+
+# Cluster A
+./scripts/Antman/create_gateway_receiver.sh
+```
+
+The remote sender should reconnect automatically within a few seconds.
+
+### Region not in cluster config
+
+Observed failure:
+
+- `alter region --name=/Activity --gateway-sender-id=senderX` fails with:
+  `Region named '/Activity' does not exist in group 'cluster'`
+- This happens even though `list regions` shows `/Activity` is present
+
+Root cause:
+
+The `/Activity` region was auto-recovered from a disk persistence store on startup. Disk-recovered regions are not registered in the cluster configuration XML. The `alter region` command only operates on regions that are registered in the cluster config service.
+
+Fix:
+
+Destroy and recreate the region via gfsh so it gets registered in the cluster config:
+
+```bash
+# On Cluster B (Vision)
+gfsh -e "connect --locator=172.22.79.100[20334]" \
+  -e "destroy region --name=/Activity" \
+  -e "create region --name=/Activity --type=REPLICATE_PERSISTENT --gateway-sender-id=senderB"
+
+# On Cluster A (Antman)
+gfsh -e "connect --locator=192.168.0.150[10334]" \
+  -e "destroy region --name=/Activity" \
+  -e "create region --name=/Activity --type=REPLICATE --gateway-sender-id=senderA"
+```
+
+**Warning**: `destroy region` removes all in-memory and disk-persisted data for that region. Export or back up data first if needed.
 
 ## Optional Expansion: Hulk locator2
 

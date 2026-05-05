@@ -14,6 +14,7 @@ LOCATOR_BIND_ADDRESS="${LOCATOR_BIND_ADDRESS:-172.22.79.100}"
 LOCATOR_HOSTNAME_FOR_CLIENTS="${LOCATOR_HOSTNAME_FOR_CLIENTS:-192.168.0.14}"
 LOCATOR_PORT="${LOCATOR_PORT:-20334}"
 DISTRIBUTED_SYSTEM_ID="${DISTRIBUTED_SYSTEM_ID:-2}"
+REMOTE_LOCATORS="${REMOTE_LOCATORS:-192.168.0.150[10334],192.168.0.151[10334]}"
 
 SERVER_NAME="${SERVER_NAME:-serverB1}"
 SERVER_DIR="${SERVER_DIR:-$CLUSTER_DIR/serverB1}"
@@ -58,6 +59,7 @@ echo "=== Starting Cluster B locator on Vision ==="
   --hostname-for-clients=$LOCATOR_HOSTNAME_FOR_CLIENTS \
   --port=$LOCATOR_PORT \
   --J=-Dgemfire.distributed-system-id=$DISTRIBUTED_SYSTEM_ID \
+  --J=-Dgemfire.remote-locators=$REMOTE_LOCATORS \
   --J=-javaagent:$JMX_EXPORTER_JAR=$LOCATOR_JMX_EXPORTER_PORT:$JMX_EXPORTER_CONFIG"
 
 sleep 5
@@ -72,5 +74,13 @@ echo "=== Starting Cluster B server on Vision ==="
     --hostname-for-clients=$SERVER_HOSTNAME_FOR_CLIENTS \
     --groups=$SERVER_GROUPS \
     --J=-javaagent:$JMX_EXPORTER_JAR=$JMX_EXPORTER_PORT:$JMX_EXPORTER_CONFIG"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+echo "=== Creating/restoring GatewayReceiver on Cluster B ==="
+"$SCRIPT_DIR/create_gateway_receiver.sh"
+
+echo "=== Creating/restoring GatewaySender on Cluster B ==="
+"$SCRIPT_DIR/create_gateway_sender.sh"
 
 echo "=== Vision Cluster B startup complete ==="
