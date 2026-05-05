@@ -74,4 +74,12 @@ gfsh -e "connect --locator=$LOCATOR_CONNECTION" \
          --J=-Dgemfire.start-dev-rest-api=true \
          --J=-javaagent:$JMX_EXPORTER_JAR=$JMX_EXPORTER_PORT:$JMX_EXPORTER_CONFIG"
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+echo "=== Creating/restoring GatewayReceiver on Cluster A ==="
+"$SCRIPT_DIR/create_gateway_receiver.sh"
+
+echo "=== Creating/restoring GatewaySender on Cluster A ==="
+"$SCRIPT_DIR/create_gateway_sender.sh"
+
 echo "=== Antman WAN startup complete ==="
