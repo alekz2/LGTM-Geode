@@ -27,7 +27,7 @@ Notes:
 
 - Vision is behind WSL2 NAT, so Cluster A reaches the GatewayReceiver through Thor.
 - Warmachine and Vision share the same WSL2 virtual network adapter on Thor and both bind to `172.22.79.100`. They must use distinct ports for all Geode members.
-- Warmachine runs no locator and no GatewayReceiver. It joins Cluster B by connecting to Vision's locatorB at `172.22.79.100[20334]`.
+- Warmachine runs no locator. Its serverB2 hosts a GatewayReceiver on port 5001 for A→B traffic (redundant alongside serverB1's receiver on port 5000). It joins Cluster B by connecting to Vision's locatorB at `172.22.79.100[20334]`.
 
 ## Topology
 
@@ -54,17 +54,22 @@ Notes:
  | Cache Server: 40404   |                     | Cache Server: 40405   |
  | REST API: 7071        |                     | REST API: 7071        |
  | JMX Exporter: 9404    |                     | JMX Exporter: 9404    |
+ | GatewayReceiver: 6000 |                     | Group: wan-sender     |
+ | Group: wan-sender     |                     | senderA (secondary)   |
+ | senderA (primary)     |                     |                       |
  +-----------------------+                     +-----------------------+
 ```
 
-### WAN Paths (Bidirectional)
+### WAN Paths — Full Duplex
 
 ```text
-A → B:  Antman(senderA) -> Thor 192.168.0.14:5000 -> Vision 172.22.79.100:5000/5001 -> GatewayReceiver
-B → A:  Vision/Warmachine(senderB) -> Antman 192.168.0.150:6000 -> GatewayReceiver
+A → B:  Antman/Hulk (senderA) -> Thor 192.168.0.14:5000 -> Vision 172.22.79.100:5000 -> GatewayReceiver (serverB1)
+        Antman/Hulk (senderA) -> Thor 192.168.0.14:5001 -> Warmachine 172.22.79.100:5001 -> GatewayReceiver (serverB2, redundant)
+
+B → A:  Vision (senderB) -> Antman 192.168.0.150:6000 -> GatewayReceiver (server1, direct — no Thor)
 ```
 
-Note: B→A traffic goes directly from Vision to Antman (both on `192.168.0.x` subnet). No portproxy is needed for this direction.
+Note: The B→A path does not go through Thor because Vision can reach Antman directly on the LAN. senderB connects to `192.168.0.150:6000` without any portproxy.
 
 ### Cluster B
 
@@ -85,8 +90,9 @@ Note: B→A traffic goes directly from Vision to Antman (both on `192.168.0.x` s
  | Host: Vision           |                    | Host: Warmachine      |
  | IP: 172.22.79.100      |                    | IP: 172.22.79.100     |
  | Cache Server: 40405/tcp|                    | Cache Server: 40406/tcp|
- | GatewayReceiver: 5001  |                    | GatewayReceiver: 5000 |
- | (A→B receiver)         |                    | (A→B receiver)        |
+ | GatewayReceiver: 5000  |                    | GatewayReceiver: 5001 |
+ | Group: wan-receiver    |                    | Group: wan-receiver   |
+ | senderB (primary)      |                    | (shared WSL2 adapter) |
  +-----------------------+                     +-----------------------+
 ```
 
@@ -99,6 +105,7 @@ Note: B→A traffic goes directly from Vision to Antman (both on `192.168.0.x` s
 | Antman | 7070 | locator1 HTTP service | Locator HTTP service |
 | Antman | 9405 | locator1 JMX Exporter | Locator metrics endpoint |
 | Antman | 40404 | server1 | Cache server |
+| Antman | 6000 | server1 GatewayReceiver | WAN receiver for B→A traffic (direct from Vision, no portproxy) |
 | Antman | 7071 | server1 REST | Dev REST API |
 | Antman | 9404 | server1 JMX Exporter | Metrics endpoint |
 | Hulk | 10334 | locator2 | Optional Cluster A locator |
@@ -114,10 +121,10 @@ Note: B→A traffic goes directly from Vision to Antman (both on `192.168.0.x` s
 | Vision | 9405 | locatorB JMX Exporter | Metrics endpoint (localhost only, scraped by local Alloy agent) |
 | Vision | 9404 | serverB1 JMX Exporter | Metrics endpoint (localhost only, scraped by local Alloy agent) |
 | Warmachine | 40406 | serverB2 | Cache server (distinct port — shares 172.22.79.100 with Vision) |
-| Warmachine | 5000 | serverB2 GatewayReceiver | WAN A→B receiver (dynamic from range 5000-5001) |
-| Warmachine | 9406 | serverB2 JMX Exporter | Metrics endpoint — must use 9406 (9404 conflicts with serverB1) |
-| Antman | 6000 | server1 GatewayReceiver | WAN B→A receiver — requires `firewall-cmd --add-port=6000/tcp` on Antman |
-| Thor | 5000 | portproxy | A→B GatewayReceiver forwarded to Vision (port range 5000-5001) |
+| Warmachine | 5001 | serverB2 GatewayReceiver | WAN receiver for A→B traffic (redundant alongside serverB1:5000) |
+| Warmachine | 9406 | serverB2 JMX Exporter | Metrics endpoint (localhost only, scraped by local Alloy agent) — must use 9406 as 9404 conflicts with serverB1 |
+| Thor | 5000 | portproxy | GatewayReceiver serverB1 forwarded to Vision |
+| Thor | 5001 | portproxy | GatewayReceiver serverB2 forwarded to Warmachine |
 | Thor | 20334 | portproxy | Cluster B locator forwarded to Vision |
 | Thor | 40405 | portproxy | serverB1 forwarded to Vision |
 | Thor | 40406 | portproxy | serverB2 forwarded to Warmachine |
@@ -247,11 +254,18 @@ Thor forwards specific ports from its physical Wi-Fi IP (`192.168.0.14`) into th
 
 | External (Thor) | Internal (WSL2) | Purpose |
 | --- | --- | --- |
+<<<<<<< HEAD
 | 192.168.0.14:5000 | 172.22.79.100:5000 | GatewayReceiver (Warmachine/serverB2) |
 | 192.168.0.14:5001 | 172.22.79.100:5001 | GatewayReceiver (Vision/serverB1) |
+=======
+| 192.168.0.14:5000 | 172.22.79.100:5000 | GatewayReceiver serverB1 (Vision) — A→B |
+| 192.168.0.14:5001 | 172.22.79.100:5001 | GatewayReceiver serverB2 (Warmachine) — A→B redundant |
+>>>>>>> 6242a4d (Add full duplex WAN replication docs, Hulk wan-sender group fix, and ArrangingTransaction client)
 | 192.168.0.14:20334 | 172.22.79.100:20334 | Cluster B locator (Vision/locatorB) |
 | 192.168.0.14:40405 | 172.22.79.100:40405 | serverB1 (Vision) |
 | 192.168.0.14:40406 | 172.22.79.100:40406 | serverB2 (Warmachine) |
+
+Note: The B→A GatewayReceiver (Antman port 6000) does not need a portproxy rule — Vision reaches Antman directly on the LAN.
 
 Verify rules on Thor:
 
@@ -309,6 +323,7 @@ It also enables:
 - locator JMX Exporter on `9405`
 - server REST API on `7071`
 - JMX Exporter on `9404`
+- server group `wan-sender`
 - membership port range `41000-41020`
 - dual locator list `Antman[10334],Hulk[10334]`
 
@@ -332,7 +347,11 @@ It also sets:
 
 - distributed system ID `2`
 - locator advertised hostname-for-clients `192.168.0.14`
+<<<<<<< HEAD
 - `remote-locators=192.168.0.150[10334],192.168.0.151[10334]` — required for `senderB` to discover Cluster A's gateway receiver
+=======
+- locatorB `remote-locators=192.168.0.150[10334],192.168.0.151[10334]` (passed as JVM property, points directly to Antman and Hulk — not through Thor)
+>>>>>>> 6242a4d (Add full duplex WAN replication docs, Hulk wan-sender group fix, and ArrangingTransaction client)
 - server group `wan-receiver`
 
 **Key note — bind address and hostname resolution**: The locator starts with `--bind-address=172.22.79.100`. This works correctly only because Vision's `/etc/hosts` maps `Vision` → `172.22.79.100`, which causes `InetAddress.getLocalHost()` to return `172.22.79.100` at JVM startup. Without that `/etc/hosts` entry, Geode's `SocketCreator.getLocalHost()` scans network interfaces, finds WSL2's `10.255.255.254` NAT loopback proxy on the `lo` interface (which is not in the 127.0.0.0/8 range so `isLoopbackAddress()` returns false), and caches it as the locator's member address before any config is applied. Members then try to contact the locator at `10.255.255.254:20334`, which is refused. See [senderB Running, not Connected](#senderb-running-not-connected--locator-advertises-10255255254) for the full root cause and the one-time `/etc/hosts` setup required on Vision.
@@ -388,6 +407,7 @@ distributed-system-id=1
 remote-locators=192.168.0.14[20334]
 ```
 
+<<<<<<< HEAD
 ### Cluster A receiver (B→A)
 
 `scripts/Antman/create_gateway_receiver.sh` creates:
@@ -411,6 +431,38 @@ sudo firewall-cmd --reload
 ```
 
 ### Cluster B receiver (A→B)
+=======
+### Cluster A receiver
+
+A GatewayReceiver exists on Cluster A (server1, port 6000) to accept B→A traffic from `senderB`. It was created via manual gfsh and is persisted in the cluster configuration disk store. There is no dedicated create script for this receiver; on a fresh cluster configuration wipe it must be recreated manually:
+
+```bash
+gfsh -e "connect --locator=192.168.0.150[10334]" \
+  -e "create gateway-receiver --start-port=6000 --end-port=6000 --manual-start=false"
+```
+
+`--bind-address` is intentionally omitted for the same reason as the Cluster B receiver — see the `locatorB NullPointerException` troubleshooting entry.
+
+### Cluster B sender
+
+`senderB` exists on Cluster B (serverB1 as primary) and replicates to Cluster A (distributed-system-id `1`). It was created via manual gfsh and is persisted in the cluster configuration disk store. There is no dedicated create script; on a fresh configuration wipe it must be recreated:
+
+```bash
+gfsh -e "connect --locator=172.22.79.100[20334]" \
+  -e "create gateway-sender --id=senderB --remote-distributed-system-id=1 --parallel=false --manual-start=false --group=wan-receiver"
+```
+
+After creating senderB, update the Activity region on Cluster B to wire it:
+
+```bash
+gfsh -e "connect --locator=172.22.79.100[20334]" \
+  -e "alter region --name=Activity --gateway-sender-id=senderB"
+```
+
+senderB connects **directly** to Antman at `192.168.0.150:6000` — it does not go through Thor's portproxy.
+
+### Cluster B receiver
+>>>>>>> 6242a4d (Add full duplex WAN replication docs, Hulk wan-sender group fix, and ArrangingTransaction client)
 
 `scripts/Vision/create_gateway_receiver.sh` creates:
 
@@ -427,6 +479,7 @@ The port **range** `5000-5001` is required because both `serverB1` (Vision) and 
 
 **Auto-restore note**: Geode 1.15.2 restores GatewaySenders from cluster config automatically on server restart, but GatewayReceivers are always absent after a locator restart. The root cause is confirmed in the locatorB log: the cluster config service calls `removeInvalidGatewayReceivers` during its own startup sequence, before any server members have rejoined. At that instant there are no running members backing the receiver, so every persisted gateway receiver element is considered "invalid" and deleted from the cluster config. By the time servers rejoin seconds later, the receiver config is already gone. GatewaySenders have no equivalent cleanup pass and survive restarts unaffected. Both `scripts/Vision/start_geode.sh` and `scripts/Antman/start_geode.sh` call their respective `create_gateway_receiver.sh` at the end of startup to recreate the receiver after this deletion.
 
+<<<<<<< HEAD
 ### Cluster B sender (B→A)
 
 `scripts/Vision/create_gateway_sender.sh` creates or reuses:
@@ -497,13 +550,47 @@ gfsh -e "connect --locator=192.168.0.150[10334]" \
 # Cluster B
 gfsh -e "connect --locator=172.22.79.100[20334]" \
   -e "create region --name=/Activity --type=REPLICATE_PERSISTENT --gateway-sender-id=senderB"
+=======
+Current validated region design — full duplex:
+
+- Cluster A region `Activity`
+  - `data-policy = REPLICATE`
+  - `gateway-sender-id = senderA`
+- Cluster B region `Activity`
+  - `data-policy = REPLICATE_PERSISTENT` (gfsh type: `REPLICATE_PERSISTENT`)
+  - `gateway-sender-id = senderB`
+
+Both clusters replicate to each other. Writes on Cluster A propagate to Cluster B via `senderA`; writes on Cluster B propagate to Cluster A via `senderB`.
+
+Create commands if regions are missing after a configuration wipe:
+
+```bash
+# Cluster A — region already created by locator cluster config on restart if disk store intact
+# Cluster B
+gfsh -e "connect --locator=172.22.79.100[20334]" \
+  -e "create region --name=Activity --type=REPLICATE_PERSISTENT --gateway-sender-id=senderB --group=wan-receiver"
+>>>>>>> 6242a4d (Add full duplex WAN replication docs, Hulk wan-sender group fix, and ArrangingTransaction client)
 ```
 
 ## Recommended Execution Order
 
+<<<<<<< HEAD
 ### Full bidirectional bootstrap (one-time setup)
 
 This sequence is required on initial setup or after a full cluster wipe. A full restart is needed because `remote-locators` on Vision's locator is a JVM startup property.
+=======
+### Initial bootstrap (full duplex)
+
+1. Start Cluster B on Vision and Warmachine.
+2. Create the GatewayReceiver on Cluster B (Vision script).
+3. Create `senderB` on Cluster B.
+4. Create the `Activity` region on Cluster B with `senderB` wired.
+5. Start Cluster A on Antman and Hulk.
+6. Create the GatewayReceiver on Cluster A.
+7. Create `senderA` on Cluster A (Antman script).
+8. Validate members, gateways, and region wiring on both clusters.
+9. Run end-to-end tests in both directions.
+>>>>>>> 6242a4d (Add full duplex WAN replication docs, Hulk wan-sender group fix, and ArrangingTransaction client)
 
 ```
 1.  ANTMAN:      sudo firewall-cmd --permanent --add-port=6000/tcp && sudo firewall-cmd --reload
@@ -527,6 +614,7 @@ This sequence is required on initial setup or after a full cluster wipe. A full 
 Steps 15 and 16 (`alter region`) only succeed if the `/Activity` region is already registered in each cluster's config XML. If the region needs to be created first:
 
 ```bash
+<<<<<<< HEAD
 # Cluster A (Antman)
 gfsh -e "connect --locator=192.168.0.150[10334]" \
   -e "create region --name=/Activity --type=REPLICATE --gateway-sender-id=senderA"
@@ -534,10 +622,20 @@ gfsh -e "connect --locator=192.168.0.150[10334]" \
 # Cluster B (Vision)
 gfsh -e "connect --locator=172.22.79.100[20334]" \
   -e "create region --name=/Activity --type=REPLICATE_PERSISTENT --gateway-sender-id=senderB"
+=======
+./scripts/Vision/start_geode.sh
+./scripts/Warmachine/start_geode.sh
+./scripts/Vision/create_gateway_receiver.sh
+gfsh -e "connect --locator=172.22.79.100[20334]" \
+  -e "create gateway-sender --id=senderB --remote-distributed-system-id=1 --parallel=false --manual-start=false --group=wan-receiver"
+gfsh -e "connect --locator=172.22.79.100[20334]" \
+  -e "create region --name=Activity --type=REPLICATE_PERSISTENT --gateway-sender-id=senderB --group=wan-receiver"
+>>>>>>> 6242a4d (Add full duplex WAN replication docs, Hulk wan-sender group fix, and ArrangingTransaction client)
 ```
 
 In that case, skip steps 15 and 16 — the sender is wired at `create region` time.
 
+<<<<<<< HEAD
 ### Normal restart (cluster config intact)
 
 On normal restarts where both clusters have their configuration disk stores intact:
@@ -550,6 +648,14 @@ On normal restarts where both clusters have their configuration disk stores inta
 5. WARMACHINE:  ./scripts/Warmachine/start_geode.sh
 6. ANTMAN:      ./scripts/Antman/start_geode.sh
 7. HULK:        ./scripts/Hulk/start_geode.sh                 (if locator2 is needed)
+=======
+```bash
+./scripts/Antman/start_geode.sh
+./scripts/Hulk/start_geode.sh
+gfsh -e "connect --locator=192.168.0.150[10334]" \
+  -e "create gateway-receiver --start-port=6000 --end-port=6000 --manual-start=false"
+./scripts/Antman/create_gateway_sender.sh
+>>>>>>> 6242a4d (Add full duplex WAN replication docs, Hulk wan-sender group fix, and ArrangingTransaction client)
 ```
 
 `start_geode.sh` on Vision automatically calls `create_gateway_receiver.sh` and `create_gateway_sender.sh` at the end of startup. No manual gateway steps are needed on normal restarts.
@@ -596,7 +702,11 @@ Expected: `Connected to 192.168.0.14:5000`
 
 If this fails, see [Thor Portproxy Maintenance](#thor-portproxy-maintenance).
 
+<<<<<<< HEAD
 ### End-to-end replication test (A→B)
+=======
+### End-to-end replication test — A→B
+>>>>>>> 6242a4d (Add full duplex WAN replication docs, Hulk wan-sender group fix, and ArrangingTransaction client)
 
 On Antman:
 
@@ -641,6 +751,25 @@ gfsh -e "connect --locator=172.22.79.100[20334]" -e "list gateways"
 If a sender shows `Running, not Connected`:
 - **senderA**: check Thor portproxy (port 5000/5001) and Vision's GatewayReceiver status
 - **senderB**: check Antman firewall (port 6000) and that Vision's locator started with `--bind-address=172.22.79.100`
+
+### End-to-end replication test — B→A
+
+On Vision:
+
+```bash
+gfsh -e "connect --locator=172.22.79.100[20334]" -e "put --region=Activity --key=E2E002 --value=wan_test_reverse"
+```
+
+On Antman:
+
+```bash
+gfsh -e "connect --locator=192.168.0.150[10334]" -e "get --region=Activity --key=E2E002"
+```
+
+Expected result:
+
+- Cluster A returns the value written on Cluster B.
+- `senderB` remains `Running and Connected`.
 
 ## REST and Query Notes
 
@@ -930,6 +1059,31 @@ Fix validated by:
 
 Expected result: `GatewayReceiver` shows status active on `serverB1` with `Sender Count = 0` until Cluster A connects. On subsequent restarts locatorB must reach `Cluster configuration service is up and running` without exception.
 
+### senderA or senderB Running, not Connected after portproxy outage
+
+Observed failure:
+
+- Server starts while Thor's portproxy is stale (iphlpsvc not rebound).
+- Sender log shows `[fatal] GatewaySender senderA could not get remote locator information for remote site 2`.
+- Sender reports `isRunning=true` but never logs `Using Pooled Connection` even after portproxy is restored.
+
+Root cause:
+
+- The FATAL occurs when the sender's event processors fail to find remote site info from the local locator on their very first attempt at startup. Unlike a mid-run disconnect, this startup-time failure does not trigger the same reconnect loop.
+
+Fix:
+
+1. Restore the portproxy path first — restart `iphlpsvc` on Thor and verify with `nc -zv 192.168.0.14 5000` from Antman.
+2. Restart the affected server (server1 on Antman for senderA; serverB1 on Vision for senderB). A clean start with the portproxy working will allow the sender to connect immediately.
+
+Verify after restart:
+
+```bash
+grep "senderA.*Pooled Connection" /home/alex/geode_cluster/server1/server1.log | tail -5
+```
+
+Expected: five `Using Pooled Connection` lines dated within the last minute.
+
 ### senderA Running, not Connected — remote-locators empty
 
 Observed failure:
@@ -981,6 +1135,7 @@ Then retest from Antman:
 nc -zv 192.168.0.14 5000
 ```
 
+<<<<<<< HEAD
 ### senderB Running, not Connected — locator advertises 10.255.255.254
 
 Observed failure:
@@ -1101,20 +1256,23 @@ gfsh -e "connect --locator=192.168.0.150[10334]" \
 **Warning**: `destroy region` removes all in-memory and disk-persisted data for that region. Export or back up data first if needed.
 
 ## Optional Expansion: Hulk locator2
+=======
+## Hulk as Full Cluster A Member
+>>>>>>> 6242a4d (Add full duplex WAN replication docs, Hulk wan-sender group fix, and ArrangingTransaction client)
 
-The repo includes `scripts/Hulk/start_geode.sh` and `scripts/Hulk/stop_geode.sh` for a dual-locator Cluster A layout.
+Hulk now runs as a full Cluster A member alongside Antman. This is the active validated layout, not an optional expansion.
 
-After cutover, Cluster A can run:
+Cluster A members:
 
-- `locator1` on Antman
-- `locator2` on Hulk
-- `server1` on Antman
-- `server2` on Hulk
+- `locator1` on Antman (`192.168.0.150:10334`)
+- `locator2` on Hulk (`192.168.0.151:10334`)
+- `server1` on Antman (`192.168.0.150:40404`) — `wan-sender` group, `senderA` primary
+- `server2` on Hulk (`192.168.0.151:40405`) — `wan-sender` group, `senderA` secondary
 
-Target locator list:
+Both locators load `gemfire-wan-a.properties` so both carry `remote-locators` for WAN discovery. Both servers are in group `wan-sender` and participate in `senderA`; server2 acts as secondary and takes over if server1 fails.
+
+Locator list used by all Cluster A members:
 
 ```text
 Antman[10334],Hulk[10334]
 ```
-
-Use this expansion only after the single-locator baseline is stable and validated.
